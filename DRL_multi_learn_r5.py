@@ -33,7 +33,7 @@ class DRLmultiagent(object):
         self.action_size = action_size
         self.action_cand = action_cand
         self.action_set = np.linspace(0, self.pmax, self.action_cand)
-
+        #self.action_set = np.logspace(0, math.log(self.pmax), self.action_cand)
         self.transmitters = 19
         self.users = 19
 

@@ -8,14 +8,14 @@ class DRLenv(object):
     def __init__(self):
 
 
-        self.transmitters = 3
+        self.transmitters = 19
         self.tx_position = self.tx_positions_gen()
         self.rx_position = self.rx_positions_gen(self.tx_position)
 
     def tx_positions_gen(self):
         R = 500
         tx_positions = []
-        '''
+
         tx_positions.append((-2*R, 2*R * math.sqrt(3)))
         tx_positions.append((0, 2*R * math.sqrt(3)))
         tx_positions.append((2*R, 2*R * math.sqrt(3)))
@@ -43,7 +43,7 @@ class DRLenv(object):
         tx_positions.append((-2 * R, 0))
         tx_positions.append((0, 0))
         tx_positions.append((-R, -R * math.sqrt(3)))
-
+        '''
         return tx_positions
 
     def rx_positions_gen(self, tx_position):
