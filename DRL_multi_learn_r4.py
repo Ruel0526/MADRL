@@ -20,7 +20,7 @@ from memory_profiler import profile
 class DRLmultiagent(object):
     def __init__(self, state_size, action_size, action_cand, pmax, noise):
 
-        self.initial_learning_rate = 5 * 1e-3#1e-2
+        self.initial_learning_rate = 1e-2
         self.learning_rate = self.initial_learning_rate
         self.lambda_lr = 1e-4  # decay rate for learning rate
         #self.learning_rate_decay = 1-math.pow(10,-4)
@@ -114,9 +114,7 @@ class DRLmultiagent(object):
         inter = np.sum(channel_gain[:, agent] * actions) - direct_signal
 
         self.temp_reward1 = math.log2(1 + direct_signal / (inter + self.noise))
-        print('direct_signal = ', direct_signal)
-        print('interference = ', inter)
-        print('noise = ', self.noise)
+
         reward = self.temp_reward1
         for j in range(self.users):
             if j != agent:
@@ -132,7 +130,7 @@ class DRLmultiagent(object):
         self.next_state[1] = self.temp_reward1
         self.next_state[2] = next_channel_gain[agent, agent]
         self.next_state[3] = channel_gain[agent, agent]
-        self.next_state[4] = np.sum(next_channel_gain[:, agent] * actions) - next_channel_gain[agent, agent] * actions[agent] + self.noise
+        self.next_state[4] = np.sum(next_channel_gain[:, agent] * actions) - next_channel_gain[agent, agent] * actions[agent]
         self.next_state[5] = state[4]
 
         state_index = 6
@@ -227,3 +225,5 @@ class DRLmultiagent(object):
         for i in range(1, self.transmitters + 1):
             getattr(self, f'target_network{i}').set_weights(weight)
         return 0
+
+
