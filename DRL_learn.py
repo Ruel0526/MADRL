@@ -4,265 +4,243 @@ import numpy as np
 import itertools as it
 import random
 import tensorflow as tf
+from tensorflow.keras.models import Model
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, Activation, Flatten, Conv2D, MaxPooling2D
 from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.optimizers import SGD
 from tensorflow.keras.layers import Input
 from collections import deque
 import time
 from DRL_env import DRLenv
+import gc
 
-'''
-import argparse
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import torch.nn.functional as F
-from torch.autograd import Variable
-
-import sys
-'''
-'''
-# if gpu is to be used
-use_cuda = torch.cuda.is_available()
-FloatTensor = torch.cuda.FloatTensor if use_cuda else torch.FloatTensor
-LongTensor = torch.cuda.LongTensor if use_cuda else torch.LongTensor
-ByteTensor = torch.cuda.ByteTensor if use_cuda else torch.ByteTensor
-Tensor = FloatTensor
-
-if use_cuda:
-	torch.set_default_tensor_type('torch.cuda.FloatTensor')
-
-# setting device on GPU if available, else CPU
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print('Using device:', device)
-print()
+from memory_profiler import profile
 
 
-#Additional Info when using cuda
-if device.type == 'cuda':
-    print(torch.cuda.get_device_name(0))
-    print('Memory Usage:')
-    print('Allocated:', round(torch.cuda.memory_allocated(0)/1024**3,1), 'GB')
-    print('Cached:   ', round(torch.cuda.memory_cached(0)/1024**3,1), 'GB')
-
-
-if use_cuda:
-	torch.set_default_tensor_type('torch.cuda.FloatTensor')
-'''
 class DRLagent(object):
-    def __init__(self, state_size, action_size):
-        self.TTIs = 2000
-        self.simul_rounds = 100
+    def __init__(self, state_size, action_size, action_cand, pmax, noise):
 
-        self.EPSILON = 0.1
+        self.initial_learning_rate = 5e-3
+        self.learning_rate = self.initial_learning_rate
+        self.lambda_lr = 1e-4  # decay rate for learning rate
 
-        #self.EPSILON_DECAY = 0.99
-        self.EPSILON_DECAY = 1
-        self.EPSILON_MIN = 0.01
+        self.gamma = 0.9
 
-        self.learning_rate = 5 * math.pow(10, -3)
-        #self.learning_rate_decay = 1-math.pow(10,-4)
-
-        self.gamma = 0.95
-
-        self.pmax = 6.30957 #38dbm
+        self.pmax = pmax #38dbm
 
         self.state_size = state_size
         self.action_size = action_size
-        self.action_cand = 10
+        self.action_cand = action_cand
         self.action_set = np.linspace(0, self.pmax, self.action_cand)
 
+        self.transmitters = 3
+        self.users = 3
+
         self.env = DRLenv()
-        self.A = self.env.tx_positions_gen()
-        self.B = self.env.rx_positions_gen(self.A)
+        #self.A = self.env.tx_positions_gen()
+        #self.B = self.env.rx_positions_gen(self.A)
+        self.A = self.env.tx_positions_gen(self.transmitters, 100)
+        self.B, self.inside_status = self.env.rx_positions_gen(self.A, 10, 100)
 
-        self.H = np.ones((state_size,state_size)) * (random.gauss(0, np.sqrt(1 / 2)) + random.gauss(0, np.sqrt(1 / 2)) * 1j)
+        self.noise = noise
 
+        #self.model = self.build_network
 
-
-        #self.action = np.zeros(action_size)
-
-
-
-        self.noise = math.pow(10,-14.4)
-
-        self.model = self.build_network
-
-        self.replay_buffer = deque(maxlen=5000)
+        self.replay_buffer = deque(maxlen=100)
         self.update_rate = 100
-        self.main_network = self.build_network()
-        self.target_network = self.build_network()
+        self.main_network = self.build_network_main()
+
+        self.target_network = self.build_network_target()
         self.target_network.set_weights(self.main_network.get_weights())
 
+        self.loss = []
+
+        self.temp_reward1 = 0
+
+        self.SINR_cap = 10 ** (30 / 10)
+
+    def update_learning_rate(self):
+        self.learning_rate *= (1 - self.lambda_lr)
+
+        # Update learning rate for the main network
+        self.main_network.optimizer.lr.assign(self.learning_rate)
+
+        # Update learning rate for the single target network
+        #self.target_network.optimizer.lr.assign(self.learning_rate)
 
 
-
-
-    def build_network(self):
+    def build_network_main(self):
         model = Sequential()
-        model.add(Dense(6000, activation="tanh", input_shape=(1,)))
-        model.add(Dense(4000, activation="tanh"))
-        model.add(Dense(2000, activation="tanh"))
+        model.add(Dense(200, activation="tanh", input_shape=(self.state_size,)))
+        model.add(Dense(100, activation="tanh"))
+        model.add(Dense(40, activation="tanh"))
         model.add(Dense(self.action_size, activation="tanh"))
-        model.compile(loss="mse", optimizer='adam')
-
+        model.compile(loss="mse", optimizer=Adam(learning_rate=self.learning_rate))
+        #sgd_optimizer = tf.keras.optimizers.SGD(learning_rate=self.learning_rate, momentum=0.9)
+        #sgd_optimizer = tf.keras.optimizers.SGD(learning_rate=self.learning_rate)
+        #model.compile(loss="mse", optimizer=sgd_optimizer)
+        #model.summary()
         return model
 
-    def store_transistion(self, state, action, reward, next_state, done):
+    def build_network_target(self):
+        model = Sequential()
+        model.add(Dense(200, activation="tanh", input_shape=(self.state_size,)))
+        model.add(Dense(100, activation="tanh"))
+        model.add(Dense(40, activation="tanh"))
+        model.add(Dense(self.action_size, activation="tanh"))
+        model.compile(loss="mse", optimizer=Adam(learning_rate=self.initial_learning_rate))
+        #sgd_optimizer = tf.keras.optimizers.SGD(learning_rate=self.learning_rate, momentum=0.9)
+        #sgd_optimizer = tf.keras.optimizers.SGD(learning_rate=self.learning_rate)
+        #model.compile(loss="mse", optimizer=sgd_optimizer)
+        #model.summary()
+        return model
+
+
+    def store_transition(self, state, action, reward, next_state, done):
         self.replay_buffer.append((state, action, reward, next_state, done))
 
-    def epsilon_greedy(self, state):
-        if np.random.random() <= self.EPSILON:
-            actions = np.zeros(3)
-            for i in range(3):
-                action_temp = np.random.randint(self.action_cand)
-                actions[i] = self.action_set[action_temp]
-
+    def epsilon_greedy(self, state, epsilon):
+        actions = np.zeros(self.transmitters)
+        if np.random.random() <= epsilon:
+            # Exploration: Randomly choose an action for each transmitter
+            for i in range(self.transmitters):
+                action_temp = np.random.choice(len(self.action_set))
+                actions[i] = self.action_set[int(action_temp)]
         else:
-            Q_values = self.main_network.predict(state)
-            actions = np.zeros(3)
-            action_temp2 = np.argmax(Q_values[0])
-            test = action_temp2
-            for j in range(3):
-                actions[2-j] = self.action_set[test % self.action_cand]
-                test = test // self.action_cand
+            # Exploitation: Choose the best action based on Q-values
+            state_tensor = tf.convert_to_tensor(state.reshape(1, -1), dtype=tf.float32)
+            Q_values = self.main_network.predict(state_tensor, verbose=0)
 
+            # Reshape Q_values to match the action space structure
+            reshaped_Q_values = Q_values.reshape(-1, len(self.action_set))
+
+            # Select the best action for each transmitter
+            for i in range(self.transmitters):
+                best_action_index = np.argmax(reshaped_Q_values[i])
+                actions[i] = self.action_set[best_action_index]
 
         return actions
+    def compute_sum_rate(self, channel_gain, actions, noise):
+        sum_rate = 0
+        SINR_cap = 10 ** (30 / 10)
+        for i in range(len(actions)):
+            interferences = sum(channel_gain[j, i] * actions[j] for j in range(len(actions)) if j != i)
+            SINR = channel_gain[i, i] * actions[i] / (interferences + noise)
 
-    def full_csi(self, A, B, previous):
-        H = np.zeros((3, 3))
+            # Cap the SINR at 30 dB
+            SINR = min(SINR, SINR_cap)
+            # if SINR == SINR_cap:
+            # print('It is over 30dB')
 
-        for i in range(3):
-            for j in range(3):
-                temp = self.env.Jakes_channel(previous[i,j])
-                temp_gain = self.env.channel_gain(A[i],B[j],temp)
-                H[i, j] = temp_gain
+            sum_rate += math.log(1 + SINR)
+        return sum_rate
 
-        return H
-    '''
-    def SE(self,action, agent, TTI):
-        H = self.full_csi(TTI)
-        inter_temp = 0
-        for i in range(3):
-            inter_temp += H[i, agent] * action[i]
+    def normalize(self, value, max_value):
+        return value / max_value
 
-        inter = inter_temp - (H[agent, agent]* action[agent])
+    def step(self, state, actions, TTI, max_TTI, channel_gain, next_channel_gain):
 
-        SINR = (H[agent, agent] * action[agent])/(inter + self.noise)
-
-        rate = math.log(1+SINR)
-
-        return rate
-    '''
-
-
-    def step(self, state, action, TTI, max_TTI):
-
-        if TTI > max_TTI:
+        if TTI >= max_TTI:
             done = True
         else:
             done = False
 
-        self.H = self.full_csi(self.A, self.B, self.H)
+        if hasattr(self, 'next_state'):
+            self.next_state.fill(0)
+        else:
+            self.next_state = np.zeros([self.state_size])
 
-        inters = np.zeros(3)
+        reward = self.compute_sum_rate(channel_gain, actions, self.noise)
+        '''
+        for j, _ in top_c_interfered:
+            inter_of_interfered = np.sum(channel_gain[:, j] * actions) - channel_gain[j, j] * actions[j]
+            rate_with_agent = math.log10(1 + channel_gain[j, j] * actions[j] / (inter_of_interfered + self.noise))
+            inter_of_interfered_without_agent = inter_of_interfered - channel_gain[agent, j] * actions[agent]
+            rate_without_agent = math.log10(
+                1 + channel_gain[j, j] * actions[j] / (inter_of_interfered_without_agent + self.noise))
+            reward -= (rate_without_agent - rate_with_agent)
+        '''
 
-        for i in range(3):
+        state_index = 0
 
-            inter_temp = 0
-            for j in range(3):
-                inter_temp += self.H[j, i] * action[j]
+        for i in range(self.transmitters):
+            for j in range(self.transmitters):
+                if j != i:
+                    # Calculate interference from other agents
+                    # ...
 
-            inter = inter_temp - (self.H[i, i] * action[i])
+                    # Update the state array with interferer information
+                    self.next_state[state_index] = actions[j]
+                    self.next_state[state_index + 1] = next_channel_gain[j, i] * actions[j]
+                    self.next_state[state_index+2] = state[state_index]
+                    self.next_state[state_index + 3] = state[state_index + 1]
+                    # Move to the next set of indices for the next interferer
+                    state_index += 2
 
-            inters[i] =inter
-
-        sum_rate = 0
-        reward = 0
-
-        for k in range(3):
-            last_inter_temp = np.sum(state) - state[k]
-            SINR_temp = (self.H[k, k] * action[k])/(last_inter_temp + self.noise)
-            reward_temp = math.log(1+SINR_temp)
-            reward += reward_temp
-
-        next_state = inters
+        gc.collect()
 
         info = {}
 
-        if self.EPSILON > self.EPSILON_MIN:
-            self.EPSILON *= self.EPSILON_DECAY
+        return self.next_state, reward, done, info
 
-        return  next_state, reward, done, info
-
-
+    def action_vectors_to_indices(self, action_vectors):
+        """
+        Convert action vectors to indices in the Q-value matrix.
+        """
+        indices = []
+        for action_vector in action_vectors:
+            index = 0
+            for i, action in enumerate(action_vector):
+                index += np.where(self.action_set == action)[0][0] * (len(self.action_set) ** i)
+            indices.append(index)
+        return np.array(indices)
 
     def train(self, batch_size):
+        self.update_learning_rate()
 
-        # sample a mini batch of transition from the replay buffer
+        # Efficiently sample a minibatch
         minibatch = random.sample(self.replay_buffer, batch_size)
 
+        # Separate the data into batches
+        states, actions, rewards, next_states, dones = map(np.array, zip(*minibatch))
 
-        # compute the Q value using the target network
-        for state, action, reward, next_state, done in minibatch:
-            if not done:
-                target_Q = (reward + self.gamma * np.amax(self.target_network.predict(next_state)))
-            else:
-                target_Q = reward
+        # Convert to tensors in one go
+        states_tensor = tf.convert_to_tensor(states, dtype=tf.float32)
+        next_states_tensor = tf.convert_to_tensor(next_states, dtype=tf.float32)
+        rewards_tensor = tf.convert_to_tensor(rewards, dtype=tf.float32)
+        dones_tensor = tf.convert_to_tensor(dones, dtype=tf.float32)
 
-            # compute the Q value using the main network
-            Q_values = self.main_network.predict(state)
+        future_qs = np.amax(self.target_network.predict(next_states_tensor, verbose=0), axis=1)
+        target_qs = rewards_tensor + self.gamma * future_qs * (1 - dones_tensor)
 
-            action_number = 0
-            action_change = np.zeros((self.state_size))
-            for i in range(self.state_size):
-                stepping = self.pmax / (self.action_cand-1)
-                action_change[i] = math.floor(action[i]/stepping)
+        # Get the current Q values and update them
+        current_qs = self.main_network.predict(states_tensor, verbose=0)
 
+        # Convert action vectors to indices
+        action_indices = self.action_vectors_to_indices(actions)
 
-            for i in range(self.state_size):
-                action_number += action_change[i] * (self.action_cand ** (2-i))
+        # Update the Q values for the taken actions
+        current_qs[np.arange(batch_size), action_indices] = target_qs
 
-            action_number = int(action_number)
+        # Train the main network in one go
+        result = self.main_network.fit(states_tensor, current_qs, epochs=1, verbose=1)
 
-            Q_values[0][action_number] = target_Q
-
-            # train the main network
-            self.main_network.fit(state, Q_values, epochs=1, verbose=0)
-
-        if self.EPSILON > self.EPSILON_MIN:
-            self.EPSILON *= self.EPSILON_DECAY
-
-
+        # Append the average loss of this batch to the loss list
+        self.loss.append(np.mean(result.history['loss']))
 
     def update_target_network(self):
-        self.target_network.set_weights(self.main_network.get_weights())
+        weight = self.main_network.get_weights()
+        self.target_network.set_weights(weight)
 
+    def soft_update_target_network(self, tau):
+        main_weights = self.main_network.get_weights()
+        target_weights = self.target_network.get_weights()
 
+        for i in range(len(target_weights)):
+            target_weights[i] = (1 - tau) * target_weights[i] + tau * main_weights[i]
 
-    '''
-    def choose_action(self, epsilon):
-
-        actions = np.zeros(3)
-
-        if np.random.random() <= epsilon:
-            for i in range(3):
-                actions[i] = np.random.choice(3)
-
-            return actions
-
-
-        else:
-            for i in range(3):
-                actions[i] = np.argmax(q[i])
-
-            return actions
-
-
-    '''
-
+        self.target_network.set_weights(target_weights)
 
 
 
