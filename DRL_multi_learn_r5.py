@@ -38,8 +38,8 @@ class DRLmultiagent(object):
         self.users = 19
 
         self.env = DRLenv()
-        self.A = self.env.tx_positions_gen()
-        self.B = self.env.rx_positions_gen(self.A)
+        self.A = self.env.tx_positions_gen(self.transmitters, 100)
+        self.B, self.inside_status = self.env.rx_positions_gen(self.A, 10, 100)
 
         self.noise = noise
 
