@@ -429,8 +429,8 @@ def maximize_sum_rate_FP(num_links, channel_gain_matrix, noise_power, pmax):
 
 def main_multi():
 
-    num_simul_rounds = 1
-    num_TTIs = 1000
+    num_simul_rounds = 10
+    num_TTIs = 500
 
     batch_size = 256
     env = DRLenv()
@@ -523,7 +523,7 @@ def main_multi():
             random_pwr[i, j] = compute_sum_rate(channel_gain, action_random, noise)
 
             old_channel_gain = np.copy(channel_gain)
-            """
+
             for x in range(transmitters):
                 for y in range(users):
                     innov = random.gauss(0, np.sqrt(1 / 2)) + random.gauss(0, np.sqrt(1 / 2)) * 1j
@@ -534,7 +534,7 @@ def main_multi():
             for x in range(transmitters):
                 for y in range(users):
                     channel_gain[x, y] = env.channel_gain(dqn_multi.A[x], dqn_multi.B[y], H[x, y])
-            """
+
 
             final_reward = 0
             #tracemalloc.start()
