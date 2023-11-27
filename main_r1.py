@@ -17,7 +17,7 @@ from scipy.optimize import minimize
 import time
 import sys
 import itertools as it
-
+from itertools import product
 import random
 import scipy.special as sp
 import pandas as pd
@@ -28,6 +28,8 @@ from memory_profiler import profile
 
 import objgraph
 import gc
+
+import matplotlib.patches as patches
 
 '''
 import argparse
@@ -378,9 +380,17 @@ def opt_MIMO():
 '''
 def compute_sum_rate(channel_gain, actions, noise):
     sum_rate = 0
+    SINR_cap = 10 ** (30 / 10)
     for i in range(len(actions)):
         interferences = sum(channel_gain[j, i] * actions[j] for j in range(len(actions)) if j != i)
-        sum_rate += math.log2(1 + channel_gain[i, i] * actions[i] / (interferences + noise))
+        SINR = channel_gain[i, i] * actions[i] / (interferences + noise)
+
+        # Cap the SINR at 30 dB
+        SINR = min(SINR, SINR_cap)
+        #if SINR == SINR_cap:
+            #print('It is over 30dB')
+
+        sum_rate += math.log(1 + SINR)
     return sum_rate
 
 
@@ -402,10 +412,13 @@ def find_optimal_actions(channel_gain, action_set, noise ,num_agents):
 def sum_rate_objective(power, channel_gain_matrix, noise_power):
     num_links = channel_gain_matrix.shape[0]
     total_rate = 0
+    SINR_cap = 10 ** (30 / 10)  # Convert 30 dB SINR cap to linear scale
     for i in range(num_links):
         signal = channel_gain_matrix[i, i] * power[i]
         interference = noise_power + sum(channel_gain_matrix[j, i] * power[j] for j in range(num_links) if j != i)
-        rate = np.log2(1 + signal / interference)
+        SINR = signal / interference
+        SINR = min(SINR, SINR_cap)
+        rate = np.log2(1 + SINR)
         total_rate += rate
     return -total_rate  # Minimize the negative rate for maximization
 
@@ -427,10 +440,12 @@ def maximize_sum_rate_FP(num_links, channel_gain_matrix, noise_power, pmax):
 
 
 
+
+
 def main_multi():
 
     num_simul_rounds = 1
-    num_TTIs = 1000
+    num_TTIs = 3000
 
     batch_size = 256
     env = DRLenv()
@@ -442,15 +457,14 @@ def main_multi():
     rho = sp.jv(0, 2 * math.pi * f_d * T)
     transmitters = 19
     users = 19
-    pmax = math.pow(10, 3.8)  # 38dbm
+    pmax = math.pow(10, 0.8)  # 38dbm
     action_cand = 10
     action_set = np.linspace(0, pmax, action_cand)
-    #action_set = np.logspace(0, math.log(pmax), action_cand)
-    noise = math.pow(10, -11.4)
+    noise = math.pow(10, -14.4)
 
     interferer_size = 5
 
-    state_number = 6+4*interferer_size+3*interferer_size
+    state_number = 7+4*interferer_size+3*interferer_size
 
     dqn_multi = DRLmultiagent(state_number, 10, action_cand, pmax, noise)
 
@@ -471,6 +485,8 @@ def main_multi():
         states_of_agents = np.zeros((transmitters, state_number))  # .flatten()
         # states_of_agents = tf.convert_to_tensor(states_of_agents.reshape(1, -1), dtype=tf.float32)
 
+
+
         actions_of_agents = np.zeros((transmitters))
 
         H = np.ones((transmitters, transmitters)) * (
@@ -480,8 +496,12 @@ def main_multi():
             for y in range(users):
                 channel_gain[x, y] = env.channel_gain(dqn_multi.A[x], dqn_multi.B[y], H[x, y])
 
+        for x in range(transmitters):
+            states_of_agents[x, 0] = x
+            states_of_agents[x, 3] = channel_gain[x, x]
+
         epsilon_min = 0.01
-        lambda_epsilon = 1e-3
+        lambda_epsilon = 1e-4
         epsilon = 0.2  # Initial epsilon
 
         best = np.zeros((transmitters))
@@ -493,25 +513,31 @@ def main_multi():
         state_transit = np.zeros((transmitters, state_number))
 
         for j in range(num_TTIs):
-            if j % dqn_multi.update_rate == 0:
-                dqn_multi.update_target_network()
 
-            for k in range(transmitters):
-                actions_of_agents[k] = dqn_multi.epsilon_greedy(states_of_agents[k, :], epsilon)
-            '''
-            for x in range(users):
-                optimal[i, j] += math.log2(1 + channel_gain[x, x] * best[x] / (np.sum(channel_gain[:, x] * best) - channel_gain[x, x] * best[x] + noise))
-            '''
-            central[i, j] = compute_sum_rate(channel_gain, optimal_power, noise)
+            print(epsilon)
+
+
+            #optimal[i, j] = compute_sum_rate(channel_gain, best, noise)
+
+            #central[i, j] = compute_sum_rate(channel_gain, optimal_power, noise)
 
 
 
             #best, optimal_no_delay[i, j] = find_optimal_actions(channel_gain, action_set, noise, transmitters)
 
             #print('best actions of OPT = ', best)
+
+
+
+            for k in range(transmitters):
+                actions_of_agents[k] = dqn_multi.epsilon_greedy(states_of_agents[k, :], epsilon)
+
+            print('DRL actions:', actions_of_agents)
+            '''
             optimal_power, rates = maximize_sum_rate_FP(transmitters, channel_gain, noise, pmax)
             print("Optimal power FP:", optimal_power)
             FP[i, j] = rates
+            '''
             #print("Achieved Rates:", rates)
 
             full_pwr[i, j] = compute_sum_rate(channel_gain, action_full_pwr, noise)
@@ -523,18 +549,19 @@ def main_multi():
             random_pwr[i, j] = compute_sum_rate(channel_gain, action_random, noise)
 
             old_channel_gain = np.copy(channel_gain)
-            """
+
             for x in range(transmitters):
                 for y in range(users):
                     innov = random.gauss(0, np.sqrt(1 / 2)) + random.gauss(0, np.sqrt(1 / 2)) * 1j
                     htemp = rho * H[x, y] + (math.sqrt(1 - math.pow(rho, 2)) * innov)
                     H[x, y] = htemp
 
-            channel_gain.fill(0)
+
             for x in range(transmitters):
                 for y in range(users):
                     channel_gain[x, y] = env.channel_gain(dqn_multi.A[x], dqn_multi.B[y], H[x, y])
-            """
+                    #print("Tx poisition of ", x, dqn_multi.A[x])
+                    #print("Rx poisition of ", y, dqn_multi.B[y])
 
             final_reward = 0
             #tracemalloc.start()
@@ -544,10 +571,13 @@ def main_multi():
 
                 next_state, reward, done, info = dqn_multi.step(states_of_agents[k, :], actions_of_agents, j, num_TTIs,
                                                                 old_channel_gain, channel_gain, k)
+                #print('iter', j, 'agent', k, 'reward', reward)
                 #objgraph.show_growth()
                 #print('iteration =', j, 'agent=', k, 'current state =', states_of_agents[k, :])
                 #print('iteration =', j, 'agent=', k, 'new state=', next_state)
                 dqn_multi.store_transition(states_of_agents[k, :], actions_of_agents[k], reward, next_state, done)
+                #print('iteration', j, 'agent', k, 'current', states_of_agents[k, :])
+                #print('iteration', j, 'agent', k, 'next', next_state)
                 #objgraph.show_growth()
                 state_transit[k, :] = np.copy(next_state)
                 final_reward += reward
@@ -573,8 +603,8 @@ def main_multi():
             #print('Iteration:', j, ',' 'OPT (no delay) Reward', optimal_no_delay[i, j])
             print('Iteration:', j, ',' 'Full Power Reward', full_pwr[i, j])
             print('Iteration:', j, ',' 'Random Power Reward', random_pwr[i, j])
-            print('Iteration:', j, ',' 'FP (delay)', central[i, j])
-            print('Iteration:', j, ',' 'FP (no delay)', FP[i, j])
+            #print('Iteration:', j, ',' 'FP (delay)', central[i, j])
+            #print('Iteration:', j, ',' 'FP (no delay)', FP[i, j])
             if done:  # 같은 TTI의 step func에서도 done은 세번 갱신된다.
                 print('Simul round:', i, ',' 'Return', Return)
                 break
@@ -583,6 +613,10 @@ def main_multi():
                 print("Training is triggered.")
                 dqn_multi.train(batch_size)
 
+            if j % dqn_multi.update_rate == 0:
+                tau = 0.001  # You can adjust this value
+                dqn_multi.soft_update_target_network(tau)
+
             epsilon = max(epsilon_min, (1 - lambda_epsilon) * epsilon)
 
             gc.collect()
@@ -590,14 +624,14 @@ def main_multi():
             print(f"Time Slot {j}: Replay Buffer Length = {len(dqn_multi.replay_buffer)}")
             #print(dqn_multi.learning_rate)
 
-    np.save('./save_weights/FP.npy', FP)
-    np.save('./save_weights/central.npy', central)
+    #np.save('./save_weights/FP.npy', FP)
+    #np.save('./save_weights/central.npy', central)
     np.save('./save_weights/full_power.npy', full_pwr)
     np.save('./save_weights/random_power.npy', random_pwr)
     np.save('./save_weights/multi_agent_DRL.npy', rewards)
     np.save('./save_weights/multi_agent_DRL_rate.npy', sum_rate_of_DRL)
-    #np.save('./save_weights/optimal_no_delay.npy', optimal_no_delay)
-    #np.save('./save_weights/optimal.npy', optimal)
+    np.save('./save_weights/optimal_no_delay.npy', optimal_no_delay)
+    np.save('./save_weights/optimal.npy', optimal)
     # np.save('./save_weights/multi_agent_DRL_test.npy', rewards)
 
     plt.plot(dqn_multi.loss)
@@ -647,101 +681,91 @@ def fractional2():
 '''
 
 
-def opt():
-    num_TTIs = 1000
-    num_simul_rounds = 1
-
-    dqn = DRLagent(3, 64)
-    noise = math.pow(10, -11.4)
-    pmax = 6.30957
-
-    action_cand = 10
-    action_set = np.linspace(0, pmax, action_cand)
-
-    optimal = np.zeros((num_simul_rounds, num_TTIs))
-    start = time.time()
-
-    env = DRLenv()
-    A = env.tx_positions_gen()
-    B = env.rx_positions_gen(A)
-    temp = np.ones((3, 3)) * (random.gauss(0, np.sqrt(1 / 2)) + random.gauss(0, np.sqrt(1 / 2)) * 1j)
-    H = np.zeros((3, 3))
-
-    for i in tqdm(range(num_simul_rounds)):
-        for j in range(num_TTIs):
-
-            for l in range(3):
-                for m in range(3):
-                    temp[l, m] = env.Jakes_channel(temp[l, m])
-                    H[l, m] = env.channel_gain(A[l], B[m], temp[l, m])
-            print(H)
-
-            optimal[i, j] = 0
-            best1 = 0
-            best2 = 0
-            best3 = 0
-            for k in range(action_cand):
-                for l in range(action_cand):
-                    for m in range(action_cand):
-                        x = action_set[m]
-                        y = action_set[l]
-                        z = action_set[k]
-                        optimal_temp = math.log(1 + (H[0, 0] * x) / (H[1, 0] * y + H[2, 0] * z + noise)) + math.log(
-                            1 + (H[1, 1] * y) / (H[0, 1] * x + H[2, 1] * z + noise)) + math.log(
-                            1 + (H[2, 2] * z) / (H[0, 2] * x + H[1, 2] * y + noise))
-
-                        if optimal_temp > optimal[i, j]:
-                            optimal[i, j] = optimal_temp
-                            best1 = x
-                            best2 = y
-                            best3 = z
-            print(best1)
-            print(best2)
-            print(best3)
-    end = time.time()
-    average_time = (end - start) / (num_simul_rounds * num_TTIs)
-
-    print('opt_time = ', average_time)
-    print(optimal)
-
-    # np.save('./save_weights/FP.npy', optimal)
-    np.save('./save_weights/FP_test.npy', optimal)
 
 
 def full_pwr():
-    num_TTIs = 1000
     num_simul_rounds = 1
-
-    dqn_multi = DRLmultiagent(9, 10)
-
-    noise = math.pow(10, -11.4)
-    pmax = 6.30957
-
-    action_cand = 10
-
-    full_pwr = np.zeros((num_simul_rounds, num_TTIs))
+    num_TTIs = 1000
 
     env = DRLenv()
-    A = env.tx_positions_gen()
-    B = env.rx_positions_gen(A)
-    temp = np.ones((3, 3)) * (random.gauss(0, np.sqrt(1 / 2)) + random.gauss(0, np.sqrt(1 / 2)) * 1j)
-    H = np.zeros((3, 3))
 
-    for i in tqdm(range(num_simul_rounds)):
+    f_d = 10
+    T = 0.02
+    rho = sp.jv(0, 2 * math.pi * f_d * T)
+    transmitters = 19
+    users = 19
+    pmax = math.pow(10, 0.8)  # 38dbm
+    action_cand = 4
+    noise = math.pow(10, -14.4)
+
+    interferer_size = 2
+
+    state_number = 7 + 4 * interferer_size + 3 * interferer_size
+
+    dqn_multi = DRLmultiagent(state_number, 10, action_cand, pmax, noise)
+
+    full_pwr = np.zeros((num_simul_rounds, num_TTIs))
+    optimal_no_delay = np.zeros((num_simul_rounds, num_TTIs))
+
+    action_full_pwr = np.ones((transmitters)) * pmax
+
+    action_set = np.linspace(0, pmax, action_cand)
+
+
+    for i in range(num_simul_rounds):
+
+
+        H = np.ones((transmitters, transmitters)) * (
+                random.gauss(0, np.sqrt(1 / 2)) + random.gauss(0, np.sqrt(1 / 2)) * 1j)
+        channel_gain = np.zeros((transmitters, users))
+        for x in range(transmitters):
+            for y in range(users):
+                channel_gain[x, y] = env.channel_gain(dqn_multi.A[x], dqn_multi.B[y], H[x, y])
+
+        for x in range(transmitters):
+            x1, y1 = dqn_multi.A[x]
+            x2, y2 = dqn_multi.B[x]
+            print(np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2))
+
+
+
+        #print(dqn_multi.A)
+        #print(dqn_multi.B)
+        #print(H)
+        #print(channel_gain)
+
+
         for j in range(num_TTIs):
 
-            for l in range(3):
-                for m in range(3):
-                    temp[l, m] = env.Jakes_channel(temp[l, m])
-                    H[l, m] = env.channel_gain(A[l], B[m], temp[l, m])
+            #best, optimal_no_delay[i, j] = find_optimal_actions(channel_gain, action_set, noise, transmitters)
 
-            SNR_1 = math.log2(1 + H[0, 0] * pmax / (H[1, 0] * pmax + H[2, 0] * pmax + noise))
-            SNR_2 = math.log2(1 + H[1, 1] * pmax / (H[0, 1] * pmax + H[2, 1] * pmax + noise))
-            SNR_3 = math.log2(1 + H[2, 2] * pmax / (H[0, 2] * pmax + H[1, 2] * pmax + noise))
+            #print('best actions of OPT = ', best)
 
-            full_pwr[i, j] = SNR_1 + SNR_2 + SNR_3
+            full_pwr[i, j] = compute_sum_rate(channel_gain, action_full_pwr, noise)
+            #optimal_power, rates = maximize_sum_rate_FP(transmitters, channel_gain, noise, pmax)
+            #print("Optimal power FP:", optimal_power)
+            #FP[i, j] = rates
 
-    print(full_pwr)
+
+            for x in range(transmitters):
+                for y in range(users):
+                    innov = random.gauss(0, np.sqrt(1 / 2)) + random.gauss(0, np.sqrt(1 / 2)) * 1j
+                    htemp = rho * H[x, y] + (math.sqrt(1 - math.pow(rho, 2)) * innov)
+                    H[x, y] = htemp
+
+            for x in range(transmitters):
+                for y in range(users):
+                    channel_gain[x, y] = env.channel_gain(dqn_multi.A[x], dqn_multi.B[y], H[x, y])
+
+            #print(H)
+            #print(channel_gain)
+
+            print('Iteration:', j, ',' 'Full Power Reward', full_pwr[i, j]/transmitters)
+            #print('Iteration:', j, ',' 'optimal Reward', optimal_no_delay[i, j] / transmitters)
+
+        print('Average', np.sum(full_pwr[i, :]/(num_TTIs*transmitters)))
+        #print('Average FP', np.sum(optimal_no_delay[i, :] / (num_TTIs * transmitters)))
+
     # np.save('./save_weights/FP.npy', optimal)
     np.save('./save_weights/full_power.npy', full_pwr)
 
@@ -763,20 +787,21 @@ def graph(switch):
     random_pwr = np.load('./save_weights/random_power.npy')
     rate_DRL = np.load('./save_weights/multi_agent_DRL_rate.npy')
 
+    num_tx = 19
     num_simul_rounds = 1
     start = 20
-    space = 600
+    space = 250
 
-    reward_avg = centralized_DRL.sum(axis=0) / num_simul_rounds
-    reward_avg_multi = multi_agent_DRL.sum(axis=0) / num_simul_rounds
-    reward_avg_multi_rate = rate_DRL.sum(axis=0) / num_simul_rounds
-    reward_avg_multi_MIMO = multi_agent_DRL_MIMO.sum(axis=0) / num_simul_rounds
-    reward_avg_FP = FP.sum(axis=0) / num_simul_rounds
-    reward_avg_delayed_FP = delayed_FP.sum(axis=0) / num_simul_rounds
-    reward_avg_optimal = optimal.sum(axis=0) / num_simul_rounds
-    reward_avg_optimal_no_delay = optimal_no_delay.sum(axis=0) / num_simul_rounds
-    reward_avg_full_pwr = full_pwr.sum(axis=0) / num_simul_rounds
-    reward_avg_random_pwr = random_pwr.sum(axis=0) / num_simul_rounds
+    reward_avg = centralized_DRL.sum(axis=0) / (num_simul_rounds * num_tx)
+    reward_avg_multi = multi_agent_DRL.sum(axis=0) / (num_simul_rounds * num_tx)
+    reward_avg_multi_rate = rate_DRL.sum(axis=0) / (num_simul_rounds * num_tx)
+    reward_avg_multi_MIMO = multi_agent_DRL_MIMO.sum(axis=0) / (num_simul_rounds * num_tx)
+    reward_avg_FP = FP.sum(axis=0) / (num_simul_rounds * num_tx)
+    reward_avg_delayed_FP = delayed_FP.sum(axis=0) / (num_simul_rounds * num_tx)
+    reward_avg_optimal = optimal.sum(axis=0) / (num_simul_rounds * num_tx)
+    reward_avg_optimal_no_delay = optimal_no_delay.sum(axis=0) / (num_simul_rounds * num_tx)
+    reward_avg_full_pwr = full_pwr.sum(axis=0) / (num_simul_rounds * num_tx)
+    reward_avg_random_pwr = random_pwr.sum(axis=0) / (num_simul_rounds * num_tx)
     '''
     for i in range(len(reward_avg)):
         if reward_avg[i] ==0 and i != 0:
@@ -874,8 +899,8 @@ def graph(switch):
         #plt.plot(range(start, len(reward_avg_optimal)), cumulative_rewards_optimal, label='Brute (delay)')
         plt.plot(range(start, len(reward_avg_full_pwr)), cumulative_rewards_full_pwr, label='Full power')
         plt.plot(range(start, len(reward_avg_random_pwr)), cumulative_rewards_random_pwr, label='Random power')
-        plt.plot(range(start, len(reward_avg_FP)), cumulative_rewards_FP, label='FP (no delay)')
-        plt.plot(range(start, len(reward_avg_delayed_FP)), cumulative_rewards_delayed_FP, label='Central (Delayed FP)')
+        #plt.plot(range(start, len(reward_avg_FP)), cumulative_rewards_FP, label='FP (no delay)')
+        #plt.plot(range(start, len(reward_avg_delayed_FP)), cumulative_rewards_delayed_FP, label='Central (Delayed FP)')
 
     if switch == 1:
         # plt.plot(range(space - 1, space - 1 + len(cumulative_rewards_multi)), cumulative_rewards_multi, label='Multi-agent DRL')
@@ -889,14 +914,14 @@ def graph(switch):
                  label='Full power')
         plt.plot(range(space - 1, space - 1 + len(cumulative_rewards_random_pwr)), cumulative_rewards_random_pwr,
                  label='Random power')
-        plt.plot(range(space - 1, space - 1 + len(cumulative_rewards_FP)), cumulative_rewards_FP,
-                 label='FP (no delay)')
-        plt.plot(range(space - 1, space - 1 + len(cumulative_rewards_delayed_FP)), cumulative_rewards_delayed_FP,
-                 label='Central (Delayed FP)')
+        #plt.plot(range(space - 1, space - 1 + len(cumulative_rewards_FP)), cumulative_rewards_FP,
+        #         label='FP (no delay)')
+        #plt.plot(range(space - 1, space - 1 + len(cumulative_rewards_delayed_FP)), cumulative_rewards_delayed_FP,
+        #         label='Central (Delayed FP)')
 
     plt.legend()
     plt.xlabel('Time slot')
-    plt.ylabel('Moving average of reward')
+    plt.ylabel('Moving average of SE per link')
     plt.subplots_adjust(hspace=0.5, wspace=0.5)
 
     plt.show()
@@ -907,184 +932,92 @@ def bitcheck():
     print(is_64bit)
 
 
-def testing():
-    num_test_rounds = 10
-    num_TTIs = 100
-    epsilon = 0  # test mode
+def calculate_reward(agent, actions, channel_gain, noise, transmitters):
+    direct_signal = channel_gain[agent, agent] * actions[agent]
+    inter = np.sum(channel_gain[:, agent] * actions) - direct_signal
+    temp_reward1 = math.log2(1 + direct_signal / (inter + noise))
+    reward = temp_reward1
+
+    for m in range(transmitters):
+        if m != agent:
+            inter_of_interfered = np.sum(channel_gain[:, m] * actions) - channel_gain[m, m] * actions[m]
+            rate_with_agent = math.log2(
+                1 + channel_gain[m, m] * actions[m] / (inter_of_interfered + noise))
+            inter_of_interfered_without_agent = inter_of_interfered - channel_gain[agent, m] * actions[agent]
+            rate_without_agent = math.log2(
+                1 + channel_gain[m, m] * actions[m] / (inter_of_interfered_without_agent + noise))
+            reward -= (rate_without_agent - rate_with_agent)
+
+    return reward
+
+
+
+
+
+
+
+
+
+def plot_hexagonal_grid(tx_positions, rx_positions, inside_status, R, r):
+    fig, ax = plt.subplots()
     env = DRLenv()
+    # Plot Tx positions and draw hexagons and circles
+    for tx in tx_positions:
+        ax.scatter(*tx, color='blue', label='Tx' if tx == tx_positions[0] else "")
+        # Draw hexagon around each Tx
+        hex_vertices = env.hexagon_vertices(tx, R)
+        hexagon = patches.Polygon(hex_vertices, fill=False, edgecolor='gray', linestyle='--')
+        ax.add_patch(hexagon)
+        # Draw circle of radius r around each Tx
+        circle = patches.Circle(tx, r, fill=False, edgecolor='green', linestyle=':')
+        ax.add_patch(circle)
 
-    done = False
+    # Plot Rx positions
+    for rx, inside in zip(rx_positions, inside_status):
+        color = 'red' if inside else 'orange'  # Orange for Rx outside the hexagon
+        ax.scatter(*rx, color=color, label='Rx (inside)' if inside else 'Rx (outside)')
 
-    f_d = 10
-    T = 0.02
-    rho = sp.jv(0, 2 * math.pi * f_d * T)
-    transmitters = 3
-    users = 3
+    ax.set_aspect('equal', 'box')
+    ax.legend()
+    plt.show()
+
+def testing():
+    transmitters = 19
+    users = 19
     pmax = math.pow(10, 0.8)  # 38dbm
     action_cand = 10
-    action_set = np.linspace(0, pmax, action_cand)
     noise = math.pow(10, -14.4)
 
-    state_number = 6 + 4 * (transmitters - 1) + 3 * (users - 1)
+    interferer_size = 2
+
+    state_number = 7 + 4 * interferer_size + 3 * interferer_size
 
     dqn_multi = DRLmultiagent(state_number, 10, action_cand, pmax, noise)
 
-    dqn_multi.main_network.load_weights("./save_weights/multi_agent_dqn_main_network.h5")
-    weight = dqn_multi.main_network.get_weights()
+    A = dqn_multi.A
+    B = dqn_multi.B
 
-    for i in range(1, transmitters + 1):
-        getattr(dqn_multi, f'target_network{i}').set_weights(weight)
+    for x in range(transmitters):
+        x1, y1 = dqn_multi.A[x]
+        x2, y2 = dqn_multi.B[x]
+        print(np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2))
 
-    unmatched_rewards = np.zeros((num_test_rounds, num_TTIs))
-    unmatched_sum_rate_of_DRL = np.zeros((num_test_rounds, num_TTIs))
-    optimal = np.zeros((num_test_rounds, num_TTIs))
-    optimal_no_delay = np.zeros((num_test_rounds, num_TTIs))
-    full_pwr = np.zeros((num_test_rounds, num_TTIs))
-    random_pwr = np.zeros((num_test_rounds, num_TTIs))
+    print(dqn_multi.inside_status)
 
-    action_full_pwr = np.ones((transmitters)) * pmax
+    plot_hexagonal_grid(A, B, dqn_multi.inside_status, 100, 10)
 
-    for i in range(num_test_rounds):
-        Return = 0
-        states_of_agents = np.zeros((transmitters, state_number))  # .flatten()
-        # states_of_agents = tf.convert_to_tensor(states_of_agents.reshape(1, -1), dtype=tf.float32)
 
-        actions_of_agents = np.zeros((transmitters))
-
-        H = np.ones((transmitters, transmitters)) * (
-                random.gauss(0, np.sqrt(1 / 2)) + random.gauss(0, np.sqrt(1 / 2)) * 1j)
-        channel_gain = np.zeros((transmitters, users))
-        for x in range(transmitters):
-            for y in range(users):
-                channel_gain[x, y] = env.channel_gain(dqn_multi.A[x], dqn_multi.B[y], H[x, y])
-        # prev_H = np.ones((transmitters, cell, antenna, users)) * (random.gauss(0, np.sqrt(1 / 2)) + random.gauss(0, np.sqrt(1 / 2)) * 1j)
-
-        best = np.zeros((transmitters))
-
-        action_random = np.zeros((transmitters))
-
-        for j in range(num_TTIs):
-            for k in range(transmitters):
-                actions_of_agents[k] = dqn_multi.epsilon_greedy(k, states_of_agents[k, :], epsilon)
-
-            for x in range(users):
-                optimal[i, j] += math.log2(1 + channel_gain[x, x] * best[x] / (
-                            np.sum(channel_gain[:, x] * best[x]) - channel_gain[x, x] * best[x] + noise))
-
-            for k in range(0, action_cand):
-                for l in range(0, action_cand):
-                    for m in range(0, action_cand):
-                        x = action_set[m]
-                        y = action_set[l]
-                        z = action_set[k]
-
-                        OPT_SE_1 = math.log2(
-                            1 + (channel_gain[0, 0] * x) / (channel_gain[1, 0] * y + channel_gain[2, 0] * z + noise))
-
-                        OPT_SE_2 = math.log2(
-                            1 + (channel_gain[1, 1] * y) / (channel_gain[0, 1] * x + channel_gain[2, 1] * z + noise))
-
-                        OPT_SE_3 = math.log2(
-                            1 + (channel_gain[2, 2] * z) / (channel_gain[0, 2] * x + channel_gain[1, 2] * y + noise))
-
-                        optimal_temp = OPT_SE_1 + OPT_SE_2 + OPT_SE_3
-
-                        if optimal_temp > optimal_no_delay[i, j]:
-                            optimal_no_delay[i, j] = optimal_temp
-                            best[0] = x
-                            best[1] = y
-                            best[2] = z
-
-            print('best actions of OPT = ', best)
-
-            for x in range(users):
-                full_pwr[i, j] += math.log2(1 + channel_gain[x, x] * action_full_pwr[x] / (
-                            np.sum(channel_gain[:, x] * action_full_pwr) - channel_gain[x, x] * action_full_pwr[
-                        x] + noise))
-
-            action_random.fill(0)
-            for x in range(transmitters):
-                action_random[x] = action_set[random.randint(0, action_cand - 1)]
-            for x in range(users):
-                random_pwr[i, j] += math.log2(1 + channel_gain[x, x] * action_random[x] / (
-                        np.sum(channel_gain[:, x] * action_random) - channel_gain[x, x] * action_random[x] + noise))
-
-            old_channel_gain = np.copy(channel_gain)
-
-            for x in range(transmitters):
-                for y in range(users):
-                    innov = random.gauss(0, np.sqrt(1 / 2)) + random.gauss(0, np.sqrt(1 / 2)) * 1j
-                    htemp = rho * H[x, y] + (math.sqrt(1 - math.pow(rho, 2)) * innov)
-                    H[x, y] = htemp
-
-            channel_gain.fill(0)
-            for x in range(transmitters):
-                for y in range(users):
-                    channel_gain[x, y] = env.channel_gain(dqn_multi.A[x], dqn_multi.B[y], H[x, y])
-
-            state_transit = np.zeros((transmitters, state_number))
-            final_reward = 0
-            # tracemalloc.start()
-            for k in range(transmitters):
-                # print('iteration =', j, 'agent=', k, 'current state =', states_of_agents[k, :])
-                # print('iteration =', j, 'agent=', k, 'new state=', next_state)
-
-                next_state, reward, done, info = dqn_multi.step(states_of_agents[k, :], actions_of_agents, j, num_TTIs,
-                                                                old_channel_gain, channel_gain, k)
-                # objgraph.show_growth()
-                print('iteration =', j, 'agent=', k, 'current state =', states_of_agents[k, :])
-                print('iteration =', j, 'agent=', k, 'new state=', next_state)
-
-                # objgraph.show_growth()
-                state_transit[k, :] = np.copy(next_state)
-                final_reward += reward
-                unmatched_sum_rate_of_DRL[i, j] += dqn_multi.temp_reward1
-            # snapshot = tracemalloc.take_snapshot()
-            # top_stats = snapshot.statistics('lineno')
-
-            # print("[ Top 10 ]")
-            # for stat in top_stats[:10]:
-            #    print(stat)
-
-            states_of_agents = np.copy(state_transit)
-
-            del state_transit
-            del old_channel_gain
-            del next_state
-
-            Return += final_reward
-            unmatched_rewards[i, j] = final_reward
-
-            # print('next_state', next_state, 'action', action)
-
-            print('Iteration:', j, ',' 'Reward', unmatched_rewards[i, j])
-            print('Iteration:', j, ',' 'Sum rate of DRL', unmatched_sum_rate_of_DRL[i, j])
-            print('Iteration:', j, ',' 'OPT Reward', optimal[i, j])
-            print('Iteration:', j, ',' 'OPT (no delay) Reward', optimal_no_delay[i, j])
-            print('Iteration:', j, ',' 'Full Power Reward', full_pwr[i, j])
-            print('Iteration:', j, ',' 'Random Power Reward', random_pwr[i, j])
-            if done:  # 같은 TTI의 step func에서도 done은 세번 갱신된다.
-                print('Simul round:', i, ',' 'Return', Return)
-                break
-
-            gc.collect()
-
-    np.save('./save_weights/full_power.npy', full_pwr)
-    np.save('./save_weights/random_power.npy', random_pwr)
-    np.save('./save_weights/multi_agent_DRL.npy', unmatched_rewards)
-    np.save('./save_weights/multi_agent_DRL_rate.npy', unmatched_sum_rate_of_DRL)
-    np.save('./save_weights/optimal_no_delay.npy', optimal_no_delay)
-    np.save('./save_weights/optimal.npy', optimal)
 
 
 if __name__ == "__main__":  ##인터프리터에서 실행할 때만 위 함수(main())을 실행해라. 즉, 다른데서 이 파일을 참조할 땐(import 시) def만 가져가고, 실행은 하지말라는 의미.
     # bitcheck()
     # main()
-    main_multi()
+    #main_multi()
     # main_multi_MIMO()
     # opt()
     # fractional()
-    # full_pwr()
+    full_pwr()
 
-    graph(0)
+
+    #graph(0)
     testing()
