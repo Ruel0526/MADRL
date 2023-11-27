@@ -224,4 +224,9 @@ class DRLmultiagent(object):
         weight = self.main_network.get_weights()
         self.target_network.set_weights(weight)
 
-
+    def soft_update_target_network(self, tau):
+        phi = self.main_network.get_weights()
+        target_phi = self.target_network.get_weights()
+        for i in range(len(phi)): ## Target network soft update
+            target_phi[i] = tau * phi[i] + (1 - tau) * target_phi[i]
+        self.target_network.set_weights(target_phi)

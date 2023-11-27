@@ -69,7 +69,7 @@ if device.type == 'cuda':
 '''
 
 
-def main():
+def main(): #centralized DRL
     num_TTIs = 500
     num_simul_rounds = 1
 
@@ -390,7 +390,7 @@ def compute_sum_rate(channel_gain, actions, noise):
         #if SINR == SINR_cap:
             #print('It is over 30dB')
 
-        sum_rate += math.log(1 + SINR)
+        sum_rate += math.log(1 + SINR) # 원래는 log2가 맞으나, 논문에서 사용한 것으로 의심되는 함수를 우선 사용함.
     return sum_rate
 
 
@@ -457,10 +457,10 @@ def main_multi():
     rho = sp.jv(0, 2 * math.pi * f_d * T)
     transmitters = 19
     users = 19
-    pmax = math.pow(10, 0.8)  # 38dbm
+    pmax = math.pow(10, 3.8)  # 38dbm
     action_cand = 10
     action_set = np.linspace(0, pmax, action_cand)
-    noise = math.pow(10, -14.4)
+    noise = math.pow(10, -11.4)
 
     interferer_size = 5
 
@@ -613,9 +613,11 @@ def main_multi():
                 print("Training is triggered.")
                 dqn_multi.train(batch_size)
 
-            if j % dqn_multi.update_rate == 0:
-                tau = 0.001  # You can adjust this value
-                dqn_multi.soft_update_target_network(tau)
+            #if j % dqn_multi.update_rate == 0:
+            #    dqn_multi.update_target_network()
+
+            tau = 0.001
+            dqn_multi.soft_update_target_network(tau) # soft update
 
             epsilon = max(epsilon_min, (1 - lambda_epsilon) * epsilon)
 
@@ -684,7 +686,7 @@ def fractional2():
 
 
 def full_pwr():
-    num_simul_rounds = 1
+    num_simul_rounds = 10
     num_TTIs = 1000
 
     env = DRLenv()
@@ -702,7 +704,7 @@ def full_pwr():
 
     state_number = 7 + 4 * interferer_size + 3 * interferer_size
 
-    dqn_multi = DRLmultiagent(state_number, 10, action_cand, pmax, noise)
+
 
     full_pwr = np.zeros((num_simul_rounds, num_TTIs))
     optimal_no_delay = np.zeros((num_simul_rounds, num_TTIs))
@@ -713,7 +715,7 @@ def full_pwr():
 
 
     for i in range(num_simul_rounds):
-
+        dqn_multi = DRLmultiagent(state_number, 10, action_cand, pmax, noise)
 
         H = np.ones((transmitters, transmitters)) * (
                 random.gauss(0, np.sqrt(1 / 2)) + random.gauss(0, np.sqrt(1 / 2)) * 1j)
@@ -978,7 +980,7 @@ def plot_hexagonal_grid(tx_positions, rx_positions, inside_status, R, r):
         ax.scatter(*rx, color=color, label='Rx (inside)' if inside else 'Rx (outside)')
 
     ax.set_aspect('equal', 'box')
-    ax.legend()
+    #ax.legend()
     plt.show()
 
 def testing():
@@ -1012,12 +1014,11 @@ def testing():
 if __name__ == "__main__":  ##인터프리터에서 실행할 때만 위 함수(main())을 실행해라. 즉, 다른데서 이 파일을 참조할 땐(import 시) def만 가져가고, 실행은 하지말라는 의미.
     # bitcheck()
     # main()
-    #main_multi()
+    main_multi()
     # main_multi_MIMO()
     # opt()
     # fractional()
-    full_pwr()
-
+    #full_pwr()
 
     #graph(0)
     testing()
