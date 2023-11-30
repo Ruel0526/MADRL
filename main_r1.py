@@ -46,6 +46,9 @@ from DRL_env_r2 import DRLenv2
 
 from tensorflow.keras import layers, regularizers
 
+from sklearn.preprocessing import MinMaxScaler
+
+
 
 '''
 import argparse
@@ -356,16 +359,18 @@ def main2():
     # 2. Agent Setup
     # Custom network architecture
     fc_layer_params = (200, 100, 40)  # Adjusted layer sizes
-    dropout_rate = 0.8  # Dropout rate (between 0 and 1)
+    dropout_rate = 0  # Dropout rate (between 0 and 1)
     l2_reg = 0.01  # L2 regularization factor
 
     # Create the Q-Network
     q_net = CustomQNetwork(
         train_env.observation_spec(),
         train_env.action_spec(),
-        fc_layer_params=fc_layer_params,
-        dropout_rate=dropout_rate,
-        l2_reg=l2_reg)
+        fc_layer_params=fc_layer_params
+        )
+
+    #dropout_rate = dropout_rate,
+    #l2_reg = l2_reg
 
     # Initial learning rate
     initial_learning_rate = 5e-3
@@ -408,13 +413,13 @@ def main2():
     replay_buffer = tf_uniform_replay_buffer.TFUniformReplayBuffer(
         data_spec=agent.collect_data_spec,
         batch_size=train_env.batch_size,
-        max_length=3000)
+        max_length=30000)
 
     # 4. Data Collection
-    initial_epsilon = 0.5
+    initial_epsilon = 0.2
 
     # Epsilon decay rate
-    epsilon_decay = 1e-3
+    epsilon_decay = 1e-4
 
     # Minimum epsilon value
     min_epsilon = 0.01
@@ -457,6 +462,18 @@ def main2():
 
         for iteration in range(num_iterations):
             # Collect a few steps and save to the replay buffer
+            #print("iter =", iteration, train_env_raw.channel_gain)
+            best, optimal_no_delay[episode, iteration] = find_optimal_actions(train_env_raw.channel_gain, env_instance.action_set,  env_instance.noise,  env_instance.transmitters)
+            full_pwr[episode, iteration] = compute_sum_rate(train_env_raw.channel_gain, action_full_pwr,
+                                                            env_instance.noise)
+
+            # Generate random actions for the random power scheme
+            for x in range(env_instance.transmitters):
+                action_random[x] = env_instance.action_set[random.randint(0, env_instance.action_cand - 1)]
+
+            random_pwr[episode, iteration] = compute_sum_rate(train_env_raw.channel_gain, action_random,
+                                                              env_instance.noise)
+
             for _ in range(collect_steps_per_iteration):
                 action_step = epsilon_greedy_policy.action(train_env.current_time_step())
                 result = collect_driver.run()
@@ -465,7 +482,9 @@ def main2():
 
                 # print("TTI=", iteration, "Reward:", result[0].reward.numpy())  # Print the reward
                 #rewards(result[0].reward.numpy())  # Collect rewards
-                rewards[episode, iteration] = result[0].reward.numpy()
+                rewards[episode, iteration] = result[0].reward.numpy().item()
+                actions = env_instance.decode_action(action_step.action.numpy())
+
 
             # Sample a batch of data from the buffer and update the agent's network
             experience, unused_info = next(iterator)
@@ -475,10 +494,9 @@ def main2():
 
             # Update step counter, log loss, etc.
             step = agent.train_step_counter.numpy()
+            #print("iter =", iteration, train_env_raw.channel_gain)
 
-            if step % 10 == 0:
-                print('step = {0}: loss = {1}'.format(step, train_loss))
-                print('step = {0}: actions = {1}'.format(step, env_instance.decode_action(action_step.action.numpy())))
+
 
             training_losses.append(train_loss)
 
@@ -490,16 +508,18 @@ def main2():
             if iteration % 100 == 0:
                 print(f'Current epsilon: {epsilon_greedy_policy._epsilon}')
 
-            best, optimal_no_delay[episode, iteration] = find_optimal_actions(train_env_raw.channel_gain,
-                                                                        env_instance.action_set, env_instance.noise,
-                                                                        env_instance.transmitters)
-            full_pwr[episode, iteration] = compute_sum_rate(train_env_raw.channel_gain, action_full_pwr, env_instance.noise)
 
-            # Generate random actions for the random power scheme
-            for x in range(env_instance.transmitters):
-                action_random[x] = env_instance.action_set[random.randint(0, env_instance.action_cand - 1)]
 
-            random_pwr[episode, iteration] = compute_sum_rate(train_env_raw.channel_gain, action_random, env_instance.noise)
+            if step % 100 == 0:
+                print('step = {0}: state = {1}'.format(step, train_env_raw.state))
+                print('step = {0}: channel gain = {1}'.format(step, train_env_raw.channel_gain))
+                print('step = {0}: loss = {1}'.format(step, train_loss))
+                print('step = {0}: DRL actions = {1}'.format(step, env_instance.decode_action(action_step.action.numpy())))
+                #print('step = {0}: DRL actions = {1}'.format(step, env_instance.action_set[action_step.action.numpy()]))
+                print('step = {0}: DRL reward = {1}'.format(step,rewards[episode, iteration]))
+                print('step = {0}: Brute action = {1}'.format(step,best))
+                print('step = {0}: Brute reward = {1}'.format(step, optimal_no_delay[episode, iteration]))
+                print('step = {0}: Full reward = {1}'.format(step, full_pwr[episode, iteration]))
             '''
             if iteration % validation_interval == 0:
                 episode_loss = 0.0
@@ -832,7 +852,7 @@ def compute_sum_rate(channel_gain, actions, noise):
     return sum_rate
 
 
-def find_optimal_actions(channel_gain, action_set, noise ,num_agents):
+def find_optimal_actions(channel_gain, action_set, noise, num_agents):
 
     optimal_sum_rate = float('-inf')
     best_actions = [0] * num_agents
@@ -843,6 +863,25 @@ def find_optimal_actions(channel_gain, action_set, noise ,num_agents):
         if current_sum_rate > optimal_sum_rate:
             optimal_sum_rate = current_sum_rate
             best_actions = actions
+
+    return best_actions, optimal_sum_rate
+
+
+def find_optimal_actions_same(channel_gain, action_set, noise, num_agents):
+    optimal_sum_rate = float('-inf')
+    best_action = 0
+
+    # Iterate over each action in the action set
+    for action in action_set:
+        # Apply the same action to all agents
+        actions = [action] * num_agents
+        current_sum_rate = compute_sum_rate(channel_gain, actions, noise)
+        if current_sum_rate > optimal_sum_rate:
+            optimal_sum_rate = current_sum_rate
+            best_action = action
+
+    # The best actions are the same for all agents
+    best_actions = [best_action] * num_agents
 
     return best_actions, optimal_sum_rate
 
@@ -1123,7 +1162,7 @@ def fractional2():
 
 def full_pwr():
     num_simul_rounds = 1
-    num_TTIs = 40000
+    num_TTIs = 1000
 
     env = DRLenv()
 
@@ -1227,8 +1266,8 @@ def graph(switch):
 
     num_tx = 3
     num_simul_rounds = 1
-    start = 20
-    space = 250
+    start = 3000
+    space = 5000
     print(len(centralized_DRL))
 
     reward_avg = centralized_DRL.sum(axis=0) / (num_simul_rounds * num_tx)
@@ -1309,6 +1348,10 @@ def graph(switch):
         #plt.plot(range(start, len(reward_avg_FP)), cumulative_rewards_FP, label='FP (no delay)')
         #plt.plot(range(start, len(reward_avg_delayed_FP)), cumulative_rewards_delayed_FP, label='Central (Delayed FP)')
 
+        plt.legend()
+        plt.xlabel('Time slot')
+        plt.ylabel('Average of cumulative reward per link')
+
     if switch == 1:
         plt.plot(range(space - 1, space - 1 + len(cumulative_rewards)), cumulative_rewards,
                  label='Centralized DRL')
@@ -1328,11 +1371,11 @@ def graph(switch):
         #plt.plot(range(space - 1, space - 1 + len(cumulative_rewards_delayed_FP)), cumulative_rewards_delayed_FP,
         #         label='Central (Delayed FP)')
 
-    plt.legend()
-    plt.xlabel('Time slot')
-    plt.ylabel('Moving average of SE per link')
+        plt.legend()
+        plt.xlabel('Time slot')
+        plt.ylabel('Moving average of SE per link')
     plt.subplots_adjust(hspace=0.5, wspace=0.5)
-
+    #plt.yscale('log', base=10)
     plt.show()
 
 
@@ -1391,29 +1434,21 @@ def plot_hexagonal_grid(tx_positions, rx_positions, inside_status, R, r):
     plt.show()
 
 def testing():
-    transmitters = 19
-    users = 19
-    pmax = math.pow(10, 0.8)  # 38dbm
-    action_cand = 10
+    channel_gain = np.array([
+        [7.77353131e-07, 1.44798894e-07, 3.78183260e-09],
+        [9.12328458e-11, 1.12949818e-08, 1.56189876e-10],
+        [3.51396675e-09, 1.33025585e-08, 6.19046877e-08]
+    ])
+
+    actions_drl = [3.50531858, 2.80425486, 0.70106372]
+    actions_brute = [6.309573444801933, 0.0, 1.4021274321782073]
     noise = math.pow(10, -14.4)
 
-    interferer_size = 2
+    sum_rate_drl = compute_sum_rate(channel_gain, actions_drl, noise)
+    sum_rate_brute = compute_sum_rate(channel_gain, actions_brute, noise)
 
-    state_number = 7 + 4 * interferer_size + 3 * interferer_size
-
-    dqn_multi = DRLmultiagent(state_number, 10, action_cand, pmax, noise)
-
-    A = dqn_multi.A
-    B = dqn_multi.B
-
-    for x in range(transmitters):
-        x1, y1 = dqn_multi.A[x]
-        x2, y2 = dqn_multi.B[x]
-        print(np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2))
-
-    print(dqn_multi.inside_status)
-
-    plot_hexagonal_grid(A, B, dqn_multi.inside_status, 100, 10)
+    print("Sum Rate DRL:", sum_rate_drl)
+    print("Sum Rate Brute Force:", sum_rate_brute)
 
 
 
@@ -1426,8 +1461,8 @@ if __name__ == "__main__":  ##인터프리터에서 실행할 때만 위 함수(
     # main_multi_MIMO()
     # opt()
     # fractional()
-    # full_pwr()
+    #full_pwr()
 
 
-    graph(0)
+    graph(1)
     #testing()
