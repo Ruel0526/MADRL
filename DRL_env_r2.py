@@ -16,9 +16,9 @@ class DRLenv2(gym.Env):
         self.transmitters = 3
         self.users = 3
         self.TTI = 0
-        self.max_TTI = 1000 # Define your max TTI
+        self.max_TTI = 40000 # Define your max TTI
         self.pmax = math.pow(10, 0.8)
-        self.action_cand = 10
+        self.action_cand = 2
         self.action_set = np.linspace(0, self.pmax, self.action_cand)
         self.noise = math.pow(10, -14.4)
         self.state_size = 2 * (1 + self.transmitters) + self.transmitters * self.users * 2

@@ -326,7 +326,7 @@ def main2():
     eval_env_raw = DRLenv2()
 
     num_TTIs = env_instance.max_TTI
-    num_simul_rounds = 10
+    num_simul_rounds = 1
 
     optimal = np.zeros((num_simul_rounds, num_TTIs))
     optimal_no_delay = np.zeros((num_simul_rounds, num_TTIs))
@@ -1123,7 +1123,7 @@ def fractional2():
 
 def full_pwr():
     num_simul_rounds = 1
-    num_TTIs = 1000
+    num_TTIs = 40000
 
     env = DRLenv()
 
@@ -1226,7 +1226,7 @@ def graph(switch):
     rate_DRL = np.load('./save_weights/multi_agent_DRL_rate.npy')
 
     num_tx = 3
-    num_simul_rounds = 10
+    num_simul_rounds = 1
     start = 20
     space = 250
     print(len(centralized_DRL))
@@ -1426,7 +1426,7 @@ if __name__ == "__main__":  ##인터프리터에서 실행할 때만 위 함수(
     # main_multi_MIMO()
     # opt()
     # fractional()
-    #full_pwr()
+    # full_pwr()
 
 
     graph(0)
