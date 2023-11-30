@@ -5,6 +5,8 @@ import random
 from gym import spaces
 import scipy.special as sp
 
+from sklearn.preprocessing import MinMaxScaler
+
 class DRLenv2(gym.Env):
     """
     Custom Environment simulating wireless communication with transmitters and users.
@@ -16,22 +18,23 @@ class DRLenv2(gym.Env):
         self.transmitters = 3
         self.users = 3
         self.TTI = 0
-        self.max_TTI = 1000 # Define your max TTI
+        self.max_TTI = 30000 # Define your max TTI
         self.pmax = math.pow(10, 0.8)
-        self.action_cand = 10
+        self.action_cand = 3
         self.action_set = np.linspace(0, self.pmax, self.action_cand)
         self.noise = math.pow(10, -14.4)
-        self.state_size = 2 * (1 + self.transmitters) + self.transmitters * self.users * 2
+        #self.state_size = 2 * (1 + self.transmitters) + self.transmitters * self.users * 2
+        self.state_size = 2+ self.users*self.transmitters
 
         self.f_d = 10
         self.T = 0.02
         self.rho = sp.jv(0, 2 * math.pi * self.f_d * self.T)
 
-        self.A = self.tx_positions_gen(self.transmitters, 100)
-        self.B, self.inside_status = self.rx_positions_gen(self.A, 10, 100)
+        self.A = self.tx_positions_gen(self.transmitters, 500)
+        self.B, self.inside_status = self.rx_positions_gen(self.A, 200, 500)
 
         # Define action and observation space
-        self.action_space = spaces.Discrete(1000)
+        self.action_space = spaces.Discrete(int(self.action_cand ** self.transmitters))
         self.observation_space = spaces.Box(low=np.float32(-np.inf), high=np.float32(np.inf), shape=(self.state_size,), dtype=np.float32)
 
         # Initialize state
@@ -161,6 +164,7 @@ class DRLenv2(gym.Env):
 
     def compute_sum_rate(self, channel_gain, actions, noise):
         sum_rate = 0
+        sum_SINR = 0
         SINR_cap = 10 ** (30 / 10)
         for i in range(len(actions)):
             interferences = sum(channel_gain[j, i] * actions[j] for j in range(len(actions)) if j != i)
@@ -172,7 +176,8 @@ class DRLenv2(gym.Env):
             # print('It is over 30dB')
 
             sum_rate += math.log(1 + SINR)
-        return sum_rate
+            sum_SINR += SINR
+        return sum_rate, sum_SINR
 
     def decode_action(self, action):
         power_levels = []
@@ -197,9 +202,10 @@ class DRLenv2(gym.Env):
         old_state = np.copy(self.state)
         old_channel_gain = np.copy(self.channel_gain)
 
+        #actions = np.ones(self.transmitters) * self.action_set[action]
         actions = self.decode_action(action)
 
-        reward = self.compute_sum_rate(self.channel_gain, actions, self.noise)
+        reward, sum_SINR = self.compute_sum_rate(self.channel_gain, actions, self.noise)
 
         for x in range(self.transmitters):
             for y in range(self.users):
@@ -211,6 +217,29 @@ class DRLenv2(gym.Env):
             for y in range(self.users):
                 self.channel_gain[x, y] = self.channel_gain_function(self.A[x], self.B[y], self.H[x, y])
 
+        scaler = MinMaxScaler()
+        gain_to_state = np.copy(self.channel_gain)
+        channel_gain_reshaped = gain_to_state.reshape(-1, 1)
+        scaled_channel_gain = scaler.fit_transform(channel_gain_reshaped)
+        scaled_channel_gain = scaled_channel_gain.reshape(self.channel_gain.shape).flatten()
+
+        m, n = self.channel_gain.shape
+        #required_size = 4 + (m * n) * 2
+        #if self.state_size < required_size:
+        #    raise ValueError(f"self.state size ({self.state_size}) is smaller than required ({required_size})")
+        self.state[0] = action
+        self.state[1] = reward
+        state_index = 2
+        self.state[state_index:state_index + m * n] = scaled_channel_gain
+        '''
+        state_index = 0
+        for i in range(self.transmitters):
+            self.state[state_index] = actions[i]
+            state_index += 1
+        self.state[state_index] = sum_SINR
+        self.state[state_index + 1] = reward
+        '''
+        '''
         m, n = self.channel_gain.shape
         required_size = 4 + (m * n) * 2
         if self.state_size < required_size:
@@ -232,6 +261,7 @@ class DRLenv2(gym.Env):
 
         del old_channel_gain
         del old_state
+        '''
 
         return self.state, reward, done, info
 
