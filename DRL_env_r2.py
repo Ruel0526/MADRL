@@ -18,15 +18,15 @@ class DRLenv2(gym.Env):
         self.transmitters = 3
         self.users = 3
         self.TTI = 0
-        self.max_TTI = 30000 # Define your max TTI
+        self.max_TTI = 50000 # Define your max TTI
         self.pmax = math.pow(10, 0.8)
         self.action_cand = 3
         self.action_set = np.linspace(0, self.pmax, self.action_cand)
         self.noise = math.pow(10, -14.4)
         #self.state_size = 2 * (1 + self.transmitters) + self.transmitters * self.users * 2
-        self.state_size = 2+ self.users*self.transmitters
+        self.state_size = (2+ self.users*self.transmitters)*2
 
-        self.f_d = 10
+        self.f_d = 2
         self.T = 0.02
         self.rho = sp.jv(0, 2 * math.pi * self.f_d * self.T)
 
@@ -35,6 +35,7 @@ class DRLenv2(gym.Env):
 
         # Define action and observation space
         self.action_space = spaces.Discrete(int(self.action_cand ** self.transmitters))
+        #self.action_space = spaces.Discrete(int(self.action_cand ))
         self.observation_space = spaces.Box(low=np.float32(-np.inf), high=np.float32(np.inf), shape=(self.state_size,), dtype=np.float32)
 
         # Initialize state
@@ -223,6 +224,10 @@ class DRLenv2(gym.Env):
         scaled_channel_gain = scaler.fit_transform(channel_gain_reshaped)
         scaled_channel_gain = scaled_channel_gain.reshape(self.channel_gain.shape).flatten()
 
+        old_channel_gain_reshaped = old_channel_gain.reshape(-1, 1)
+        old_scaled_channel_gain = scaler.fit_transform(old_channel_gain_reshaped)
+        old_scaled_channel_gain = old_scaled_channel_gain.reshape(self.channel_gain.shape).flatten()
+
         m, n = self.channel_gain.shape
         #required_size = 4 + (m * n) * 2
         #if self.state_size < required_size:
@@ -231,6 +236,9 @@ class DRLenv2(gym.Env):
         self.state[1] = reward
         state_index = 2
         self.state[state_index:state_index + m * n] = scaled_channel_gain
+        self.state[state_index + m * n] = old_state[0]
+        self.state[state_index + m * n + 1] = old_state[1]
+        self.state[state_index + m * n + 2:] = old_scaled_channel_gain
         '''
         state_index = 0
         for i in range(self.transmitters):
