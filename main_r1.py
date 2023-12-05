@@ -42,7 +42,7 @@ from tf_agents.trajectories import trajectory
 from tf_agents.drivers import dynamic_step_driver
 from tf_agents.policies import epsilon_greedy_policy as eg_policy
 
-from DRL_env_r2 import DRLenv2
+from DRL_env_r2 import DRLenv2, MADRLenv
 
 from tensorflow.keras import layers, regularizers
 
@@ -439,11 +439,6 @@ def main2():
     for _ in range(collect_steps_before_training):
         collect_driver.run()
 
-        # Early Stopping Parameters
-    best_reward = -float('inf')
-    patience = 50
-    no_improvement_counter = 0
-    early_stopped = False  # Flag to indicate if early stopping occurred
 
     # 5. Training Loop
     num_iterations = num_TTIs
@@ -920,198 +915,240 @@ def maximize_sum_rate_FP(num_links, channel_gain_matrix, noise_power, pmax):
 
 
 def main_multi():
+    env_instance = MADRLenv()
+    train_env_raw = MADRLenv()
 
+    num_TTIs = env_instance.max_TTI
     num_simul_rounds = 1
-    num_TTIs = 3000
 
-    batch_size = 256
-    env = DRLenv()
-
-    done = False
-
-    f_d = 10
-    T = 0.02
-    rho = sp.jv(0, 2 * math.pi * f_d * T)
-    transmitters = 19
-    users = 19
-    pmax = math.pow(10, 0.8)  # 38dbm
-    action_cand = 10
-    action_set = np.linspace(0, pmax, action_cand)
-    noise = math.pow(10, -14.4)
-
-    interferer_size = 5
-
-    state_number = 7+4*interferer_size+3*interferer_size
-
-    dqn_multi = DRLmultiagent(state_number, 10, action_cand, pmax, noise)
-
-    rewards = np.zeros((num_simul_rounds, num_TTIs))
-    sum_rate_of_DRL = np.zeros((num_simul_rounds, num_TTIs))
-    optimal = np.zeros((num_simul_rounds, num_TTIs))
     optimal_no_delay = np.zeros((num_simul_rounds, num_TTIs))
     full_pwr = np.zeros((num_simul_rounds, num_TTIs))
     random_pwr = np.zeros((num_simul_rounds, num_TTIs))
 
-    action_full_pwr = np.ones((transmitters)) * pmax
+    # Wrap these separate instances
+    wrapped_train_env = suite_gym.wrap_env(train_env_raw)
 
-    FP = np.zeros((num_simul_rounds, num_TTIs))
-    central = np.zeros((num_simul_rounds, num_TTIs))
+    # Create the TensorFlow environments
+    train_env = TFPyEnvironment(wrapped_train_env)
 
-    for i in range(num_simul_rounds):
-        Return = 0
-        states_of_agents = np.zeros((transmitters, state_number))  # .flatten()
-        # states_of_agents = tf.convert_to_tensor(states_of_agents.reshape(1, -1), dtype=tf.float32)
+    print("Action spec:", train_env.action_spec())
+    print("Action spec shape:", train_env.action_spec().shape)
 
+    action_full_pwr = np.ones(env_instance.transmitters) * env_instance.pmax
+    action_random = np.zeros(env_instance.transmitters)
 
+    training_losses = []
+    validation_losses = []
 
-        actions_of_agents = np.zeros((transmitters))
-
-        H = np.ones((transmitters, transmitters)) * (
-                    random.gauss(0, np.sqrt(1 / 2)) + random.gauss(0, np.sqrt(1 / 2)) * 1j)
-        channel_gain = np.zeros((transmitters, users))
-        for x in range(transmitters):
-            for y in range(users):
-                channel_gain[x, y] = env.channel_gain(dqn_multi.A[x], dqn_multi.B[y], H[x, y])
-
-        for x in range(transmitters):
-            states_of_agents[x, 0] = x
-            states_of_agents[x, 3] = channel_gain[x, x]
-
-        epsilon_min = 0.01
-        lambda_epsilon = 1e-4
-        epsilon = 0.2  # Initial epsilon
-
-        best = np.zeros((transmitters))
-
-        optimal_power = np.zeros((transmitters))
-
-        action_random = np.zeros((transmitters))
-
-        state_transit = np.zeros((transmitters, state_number))
-
-        for j in range(num_TTIs):
-
-            print(epsilon)
+    # 2. Agent Setup
+    # Custom network architecture
+    fc_layer_params = (200, 100, 40)  # Adjusted layer sizes
 
 
-            #optimal[i, j] = compute_sum_rate(channel_gain, best, noise)
-
-            #central[i, j] = compute_sum_rate(channel_gain, optimal_power, noise)
-
-
-
-            #best, optimal_no_delay[i, j] = find_optimal_actions(channel_gain, action_set, noise, transmitters)
-
-            #print('best actions of OPT = ', best)
+    # Create the Q-Network
+    q_net = CustomQNetwork(
+        train_env.observation_spec(),
+        train_env.action_spec(),
+        fc_layer_params=fc_layer_params
+    )
 
 
+    # Create a learning rate schedule
+    lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
+        initial_learning_rate=5e-3,
+        decay_steps=1,
+        decay_rate=1 - 1e-4,
+        staircase=False
+    )
 
-            for k in range(transmitters):
-                actions_of_agents[k] = dqn_multi.epsilon_greedy(states_of_agents[k, :], epsilon)
+    optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule)
 
-            print('DRL actions:', actions_of_agents)
+    # Train step counter
+    train_step_counter = tf.Variable(0)
+
+    discount_factor = 0.5
+
+    total_iterations_between_updates = 100
+    target_update_tau = 1
+
+    # Create the DQN Agent
+    agent = dqn_agent.DqnAgent(
+        train_env.time_step_spec(),
+        train_env.action_spec(),
+        q_network=q_net,
+        optimizer=optimizer,
+        td_errors_loss_fn=common.element_wise_squared_loss,
+        train_step_counter=train_step_counter,
+        gamma=discount_factor,
+        target_update_tau=target_update_tau,
+        target_update_period=total_iterations_between_updates)
+
+    agent.initialize()
+
+    # 3. Replay Buffer
+    replay_buffer = tf_uniform_replay_buffer.TFUniformReplayBuffer(
+        data_spec=agent.collect_data_spec,
+        batch_size=train_env.batch_size,
+        max_length=30000)
+
+    # 4. Data Collection
+    initial_epsilon = 0.2
+
+    # Epsilon decay rate
+    epsilon_decay = 1e-4
+
+    # Minimum epsilon value
+    min_epsilon = 0.01
+
+    # Wrap the agent's policy with EpsilonGreedyPolicy
+    epsilon_greedy_policy = eg_policy.EpsilonGreedyPolicy(
+        agent.policy, epsilon=initial_epsilon)
+
+    # Use this policy for data collection
+    collect_driver = dynamic_step_driver.DynamicStepDriver(
+        train_env,
+        epsilon_greedy_policy,
+        observers=[replay_buffer.add_batch],
+        num_steps=1)
+
+    collect_steps_before_training = 50  # Collect this many steps before starting training
+    for _ in range(collect_steps_before_training):
+        collect_driver.run()
+
+        # Early Stopping Parameters
+    best_reward = -float('inf')
+    patience = 50
+    no_improvement_counter = 0
+    early_stopped = False  # Flag to indicate if early stopping occurred
+
+    # 5. Training Loop
+    num_iterations = num_TTIs
+    collect_steps_per_iteration = 1
+    batch_size = 256
+    dataset = replay_buffer.as_dataset(
+        num_parallel_calls=3,
+        sample_batch_size=batch_size,
+        num_steps=2).prefetch(3)
+
+    iterator = iter(dataset)
+    rewards = np.zeros((num_simul_rounds, num_iterations))
+
+    for episode in range(num_simul_rounds):
+        train_env.reset()
+
+        for iteration in range(num_iterations):
+            # Collect a few steps and save to the replay buffer
+            # print("iter =", iteration, train_env_raw.channel_gain)
+            best, optimal_no_delay[episode, iteration] = find_optimal_actions(train_env_raw.channel_gain,
+                                                                              env_instance.action_set,
+                                                                              env_instance.noise,
+                                                                              env_instance.transmitters)
+            full_pwr[episode, iteration] = compute_sum_rate(train_env_raw.channel_gain, action_full_pwr,
+                                                            env_instance.noise)
+
+            # Generate random actions for the random power scheme
+            for x in range(env_instance.transmitters):
+                action_random[x] = env_instance.action_set[random.randint(0, env_instance.action_cand - 1)]
+
+            random_pwr[episode, iteration] = compute_sum_rate(train_env_raw.channel_gain, action_random,
+                                                              env_instance.noise)
+
+            for _ in range(collect_steps_per_iteration):
+                action_step = epsilon_greedy_policy.action(train_env.current_time_step())
+                result = collect_driver.run()
+                # print("TTI=", iteration, "Result:", result)  # Print the result to inspect its structure
+                # print("TTI=", iteration, "Action:", action_step.action.numpy())
+
+                # print("TTI=", iteration, "Reward:", result[0].reward.numpy())  # Print the reward
+                # rewards(result[0].reward.numpy())  # Collect rewards
+                rewards[episode, iteration] = result[0].reward.numpy().item()
+                actions = env_instance.decode_action(action_step.action.numpy())
+
+            # Sample a batch of data from the buffer and update the agent's network
+            experience, unused_info = next(iterator)
+            # print(experience)
+            train_loss = agent.train(experience).loss
+            # global_step.assign_add(1)
+
+            # Update step counter, log loss, etc.
+            step = agent.train_step_counter.numpy()
+            # print("iter =", iteration, train_env_raw.channel_gain)
+
+            training_losses.append(train_loss)
+
+            # Update epsilon
+            new_epsilon = max(min_epsilon, (1 - epsilon_decay) * epsilon_greedy_policy._epsilon)
+            epsilon_greedy_policy._epsilon = new_epsilon
+
+            # Optionally, log the current epsilon value
+            if iteration % 100 == 0:
+                print(f'Current epsilon: {epsilon_greedy_policy._epsilon}')
+
+            if step % 100 == 0:
+                print('step = {0}: state = {1}'.format(step, train_env_raw.state))
+                print('step = {0}: channel gain = {1}'.format(step, train_env_raw.channel_gain))
+                print('step = {0}: loss = {1}'.format(step, train_loss))
+                print('step = {0}: DRL actions = {1}'.format(step,
+                                                             env_instance.decode_action(action_step.action.numpy())))
+                # print('step = {0}: DRL actions = {1}'.format(step, env_instance.action_set[action_step.action.numpy()]))
+                print('step = {0}: DRL reward = {1}'.format(step, rewards[episode, iteration]))
+                print('step = {0}: Brute action = {1}'.format(step, best))
+                print('step = {0}: Brute reward = {1}'.format(step, optimal_no_delay[episode, iteration]))
+                print('step = {0}: Full reward = {1}'.format(step, full_pwr[episode, iteration]))
             '''
-            optimal_power, rates = maximize_sum_rate_FP(transmitters, channel_gain, noise, pmax)
-            print("Optimal power FP:", optimal_power)
-            FP[i, j] = rates
+            if iteration % validation_interval == 0:
+                episode_loss = 0.0
+                num_time_steps = 0  # Initialize the number of time steps
+
+                time_step = eval_env.reset()
+
+                while not time_step.is_last():
+                    action_step = agent.policy.action(time_step)
+                    next_time_step = eval_env.step(action_step.action)
+
+                    # Calculate the Q-values from the policy network
+                    predicted_q_values, _ = agent._q_network(time_step.observation, time_step.step_type)
+                    target_q_values, _ = agent._q_network(next_time_step.observation, next_time_step.step_type)
+
+                    # Calculate the Q-value difference as the loss
+                    immediate_loss = tf.reduce_mean(tf.square(predicted_q_values - target_q_values))
+
+                    episode_loss += immediate_loss.numpy()
+                    num_time_steps += 1  # Increment the number of time steps
+
+                    time_step = next_time_step
+
+                # Calculate the average validation loss over the episode and store it
+                average_validation_loss = episode_loss / num_time_steps
+                validation_losses.append(average_validation_loss)
+                print("number of time step during ep = ", num_time_steps)
+                print("validation_loss = ", average_validation_loss)
+
             '''
-            #print("Achieved Rates:", rates)
+        train_env.reset()
 
-            full_pwr[i, j] = compute_sum_rate(channel_gain, action_full_pwr, noise)
-
-            action_random.fill(0)
-            for x in range(transmitters):
-                action_random[x] = action_set[random.randint(0, action_cand - 1)]
-
-            random_pwr[i, j] = compute_sum_rate(channel_gain, action_random, noise)
-
-            old_channel_gain = np.copy(channel_gain)
-
-            for x in range(transmitters):
-                for y in range(users):
-                    innov = random.gauss(0, np.sqrt(1 / 2)) + random.gauss(0, np.sqrt(1 / 2)) * 1j
-                    htemp = rho * H[x, y] + (math.sqrt(1 - math.pow(rho, 2)) * innov)
-                    H[x, y] = htemp
-
-
-            for x in range(transmitters):
-                for y in range(users):
-                    channel_gain[x, y] = env.channel_gain(dqn_multi.A[x], dqn_multi.B[y], H[x, y])
-                    #print("Tx poisition of ", x, dqn_multi.A[x])
-                    #print("Rx poisition of ", y, dqn_multi.B[y])
-
-            final_reward = 0
-            #tracemalloc.start()
-            for k in range(transmitters):
-                # print('iteration =', j, 'agent=', k, 'current state =', states_of_agents[k, :])
-                # print('iteration =', j, 'agent=', k, 'new state=', next_state)
-
-                next_state, reward, done, info = dqn_multi.step(states_of_agents[k, :], actions_of_agents, j, num_TTIs,
-                                                                old_channel_gain, channel_gain, k)
-                #print('iter', j, 'agent', k, 'reward', reward)
-                #objgraph.show_growth()
-                #print('iteration =', j, 'agent=', k, 'current state =', states_of_agents[k, :])
-                #print('iteration =', j, 'agent=', k, 'new state=', next_state)
-                dqn_multi.store_transition(states_of_agents[k, :], actions_of_agents[k], reward, next_state, done)
-                #print('iteration', j, 'agent', k, 'current', states_of_agents[k, :])
-                #print('iteration', j, 'agent', k, 'next', next_state)
-                #objgraph.show_growth()
-                state_transit[k, :] = np.copy(next_state)
-                final_reward += reward
-                sum_rate_of_DRL[i, j] += dqn_multi.temp_reward1
-            #snapshot = tracemalloc.take_snapshot()
-            #top_stats = snapshot.statistics('lineno')
-
-            #print("[ Top 10 ]")
-            #for stat in top_stats[:10]:
-            #    print(stat)
-
-            states_of_agents = state_transit
-
-            del old_channel_gain
-            del next_state
-
-            Return += final_reward
-            rewards[i, j] = final_reward
-
-            print('Iteration:', j, ',' 'Reward', rewards[i, j])
-            print('Iteration:', j, ',' 'Sum rate of DRL', sum_rate_of_DRL[i, j])
-            #print('Iteration:', j, ',' 'OPT Reward', optimal[i, j])
-            #print('Iteration:', j, ',' 'OPT (no delay) Reward', optimal_no_delay[i, j])
-            print('Iteration:', j, ',' 'Full Power Reward', full_pwr[i, j])
-            print('Iteration:', j, ',' 'Random Power Reward', random_pwr[i, j])
-            #print('Iteration:', j, ',' 'FP (delay)', central[i, j])
-            #print('Iteration:', j, ',' 'FP (no delay)', FP[i, j])
-            if done:  # 같은 TTI의 step func에서도 done은 세번 갱신된다.
-                print('Simul round:', i, ',' 'Return', Return)
-                break
-
-            if len(dqn_multi.replay_buffer) > batch_size:
-                print("Training is triggered.")
-                dqn_multi.train(batch_size)
-
-            if j % dqn_multi.update_rate == 0:
-                tau = 0.001  # You can adjust this value
-                dqn_multi.soft_update_target_network(tau)
-
-            epsilon = max(epsilon_min, (1 - lambda_epsilon) * epsilon)
-
-            gc.collect()
-
-            print(f"Time Slot {j}: Replay Buffer Length = {len(dqn_multi.replay_buffer)}")
-            #print(dqn_multi.learning_rate)
-
-    #np.save('./save_weights/FP.npy', FP)
-    #np.save('./save_weights/central.npy', central)
+    # rewards_array = np.array(rewards).reshape(-1, num_iterations)
+    np.save('./save_weights/centralized_DRL.npy', rewards)
     np.save('./save_weights/full_power.npy', full_pwr)
     np.save('./save_weights/random_power.npy', random_pwr)
-    np.save('./save_weights/multi_agent_DRL.npy', rewards)
-    np.save('./save_weights/multi_agent_DRL_rate.npy', sum_rate_of_DRL)
     np.save('./save_weights/optimal_no_delay.npy', optimal_no_delay)
-    np.save('./save_weights/optimal.npy', optimal)
-    # np.save('./save_weights/multi_agent_DRL_test.npy', rewards)
 
-    plt.plot(dqn_multi.loss)
+    plt.figure(figsize=(12, 6))
+    plt.subplot(1, 2, 1)
+    plt.plot(training_losses, label='Training Loss')
+    plt.xlabel('Training Step')
+    plt.ylabel('Loss')
+    plt.title('Training Loss Over Time')
+    plt.legend()
+
+    # Plot validation loss
+    plt.subplot(1, 2, 2)
+    plt.plot(validation_losses, label='Validation Loss')
+    plt.xlabel('Training Iteration')
+    plt.ylabel('Loss')
+    plt.title('Validation Loss Over Training')
+    plt.legend()
+
     plt.show()
 
 
@@ -1456,8 +1493,8 @@ def testing():
 if __name__ == "__main__":  ##인터프리터에서 실행할 때만 위 함수(main())을 실행해라. 즉, 다른데서 이 파일을 참조할 땐(import 시) def만 가져가고, 실행은 하지말라는 의미.
     # bitcheck()
     #main()
-    main2()
-    #main_multi()
+    #main2()
+    main_multi()
     # main_multi_MIMO()
     # opt()
     # fractional()
