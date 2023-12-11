@@ -1,14 +1,16 @@
 import gymnasium as gym
-from gym.spaces import Box, Discrete
+from gymnasium.spaces import Box, Discrete, Dict
+#from typing import Dict
 import numpy as np
 import math
 import random
-from gym import spaces
 import scipy.special as sp
+from ray.rllib.env.multi_agent_env import MultiAgentEnv
+from gymnasium.envs.registration import register
 
 from sklearn.preprocessing import MinMaxScaler
 
-class DRLmultienv(gym.Env):
+class DRLmultienv(MultiAgentEnv):
     """
     Custom Environment simulating wireless communication with transmitters and users.
     """
@@ -17,10 +19,11 @@ class DRLmultienv(gym.Env):
         super(DRLmultienv, self).__init__()
 
         self.transmitters = 3  # Number of agents
+        self._agent_ids = set([f'agent_{i}' for i in range(self.transmitters)])
         self.users = 3
         self.TTI = 0
         self.c = 2
-        self.max_TTI = 5000
+        self.max_TTI = 5
         self.pmax = math.pow(10, 0.8)
         self.action_cand = 10
         self.action_set = np.linspace(0, self.pmax, self.action_cand)
@@ -34,11 +37,14 @@ class DRLmultienv(gym.Env):
 
         # Define action and observation space for each agent
         self.action_space = Discrete(int(self.action_cand))
-        self.observation_space = {
-            f'agent_{i}': Box(low=np.float32(-np.inf), high=np.float32(np.inf), shape=(self.state_size,), dtype=np.float32)
+        '''
+        self.observation_space = Dict({
+            f'agent_{i}': Box(low=-np.inf, high=np.inf, shape=(self.state_size,),
+                              dtype=np.float64)
             for i in range(self.transmitters)
-        }
-
+        })
+        '''
+        self.observation_space = Box(low=np.float64(-np.inf), high=np.float64(np.inf), shape=(self.state_size,), dtype=np.float64)
         # Initialize state for each agent
         self.states = {f'agent_{i}': np.zeros(self.state_size) for i in range(self.transmitters)}
         self.old_states = {f'agent_{i}': np.zeros(self.state_size) for i in range(self.transmitters)}
@@ -62,13 +68,26 @@ class DRLmultienv(gym.Env):
                 self.channel_gain[x, y] = self.channel_gain_function(self.A[x], self.B[y], self.H[x, y])
 
         # Reset state for each agent
-        for agent_id in self.states:
-            self.states[agent_id] = np.zeros(self.state_size)
+        self.states = {f'agent_{i}': np.zeros(self.state_size) for i in range(self.transmitters)}
 
         # Return initial observation for each agent
-        observation = {agent_id: self.states[agent_id] for agent_id in self.states}
-        infos = {agent_id: {} for agent_id in self.states}  # Empty info dict for each agent
-        return observation, infos
+        initial_observations = {
+            f'agent_{i}': np.zeros(self.state_size, dtype=np.float64)
+            for i in range(self.transmitters)
+        }
+
+        infos = {agent_id: {} for agent_id in initial_observations}  # Empty info dict for each agent
+        return initial_observations, infos
+
+    def action_space_sample(self, agent_ids=None):
+        # If no specific agent_ids are provided, use all agents
+        if agent_ids is None:
+            agent_ids = self._agent_ids
+
+        # Create a random action for each specified agent
+        return {agent_id: self.action_space.sample() for agent_id in agent_ids}
+
+
 
     def tx_positions_gen(self, transmitter, R):
         tx_positions = []
@@ -242,7 +261,11 @@ class DRLmultienv(gym.Env):
         top_c_interferers = sorted(interferer_gain, key=lambda x: x[1], reverse=True)[:c]
         top_c_interfered = sorted(interfered_gain, key=lambda x: x[1], reverse=True)[:c]
 
-        return top_c_interferers, top_c_interfered
+        # Sort the top c elements by j or k order
+        top_c_interferers_sorted = sorted(top_c_interferers, key=lambda x: x[0])
+        top_c_interfered_sorted = sorted(top_c_interfered, key=lambda x: x[0])
+
+        return top_c_interferers_sorted, top_c_interfered_sorted
 
     def step(self, action_dict):
         done = self.TTI >= self.max_TTI
@@ -250,6 +273,8 @@ class DRLmultienv(gym.Env):
         infos = {}
 
         old_channel_gain = np.copy(self.channel_gain)
+
+        print(action_dict)
 
         tx_powers = {agent_id: self.action_set[action] for agent_id, action in action_dict.items()}
         tx_power_list = [tx_powers[f'agent_{i}'] for i in range(self.transmitters)]
@@ -280,23 +305,39 @@ class DRLmultienv(gym.Env):
 
         # Now compute the next state for each agent
         observations = {}
+        terminateds = {}  # Change "dones" to "terminateds"
+        truncateds = {}  # Add a "truncateds" dictionary
+
         for agent_id in action_dict:
             # Assuming agent_id is an integer like 0, 1, 2, etc.
             agent = int(agent_id.split('_')[-1])  # Extract agent number from agent_id
             old_state = self.old_states[agent_id]
 
-            next_state = self.construct_observation_for_agent(agent, old_channel_gain, self.channel_gain, rate_array, old_state, action_dict)
+            next_state = self.construct_observation_for_agent(agent, old_channel_gain, self.channel_gain, rate_array,
+                                                              old_state, action_dict)
+
+            #print("next_state", next_state)
+
             observations[agent_id] = next_state
+            #print("observ", observations)
+
+            terminateds[agent_id] = done  # Set to True if the episode is done
+            truncateds[agent_id] = done  # Set to True if the episode is done
+
             self.old_states[agent_id] = next_state
 
-        # Check if the episode is done for each agent
-        dones = {agent_id: done for agent_id in action_dict}
-        dones["__all__"] = done
+        terminateds["__all__"] = done  # Set to True if the episode is done
+        truncateds["__all__"] = done  # Set to True if the episode is done
 
-        truncateds = {agent_id: False for agent_id in
-                      action_dict}  # False by default, set to True if episode ends prematurely for an agent
+        #print("Next obs:", observations)
+        # Check if the observation is in the observation space
+        '''
+        for agent_id, obs in observations.items():
+            if not self.observation_space[agent_id].contains(obs):
+                print(f"Observation for {agent_id} is out of bounds:", obs)
+        '''
 
-        return observations, rewards, dones, truncateds, infos
+        return observations, rewards, terminateds, truncateds, infos
 
     def construct_observation_for_agent(self, agent, channel_gain, next_channel_gain, rate_array, state, action_dict):
 
@@ -309,6 +350,8 @@ class DRLmultienv(gym.Env):
 
         top_c_interferers, top_c_interfered = self.sort_and_select_top_c(agent, channel_gain, next_channel_gain,
                                                                          actions, self.c)
+        #print(top_c_interferers)
+        #print(top_c_interfered)
 
         next_state[0] = agent
         next_state[1] = actions[agent]
@@ -316,7 +359,7 @@ class DRLmultienv(gym.Env):
         next_state[3] = next_channel_gain[agent, agent]
         next_state[4] = channel_gain[agent, agent]
         next_state[5] = np.sum(next_channel_gain[:, agent] * actions) - next_channel_gain[agent, agent] * actions[agent] + self.noise
-        next_state[6] = state[4]  # Assuming 'self.state' is the current state
+        next_state[6] = state[5]  # Assuming 'self.state' is the current state
 
         state_index = 7
 
@@ -330,7 +373,7 @@ class DRLmultienv(gym.Env):
             SINR_interferer = channel_gain[j, j] * actions[j] / (
                         np.sum(channel_gain[:, j] * actions) - channel_gain[j, j] * actions[j] + self.noise)
             SINR_interferer = min(SINR_interferer, self.SINR_cap)
-            next_state[state_index + 1] = math.log10(1 + SINR_interferer)
+            next_state[state_index + 1] = math.log(1 + SINR_interferer)
 
             next_state[state_index + 2] = state[state_index]
 
@@ -346,9 +389,9 @@ class DRLmultienv(gym.Env):
                         np.sum(channel_gain[:, k] * actions) - channel_gain[k, k] * actions[k] + self.noise)
             SINR_interfered = min(SINR_interfered, self.SINR_cap)
 
-            self.next_state[state_index + 1] = math.log10(1 + SINR_interfered)
+            next_state[state_index + 1] = math.log(1 + SINR_interfered)
 
-            self.next_state[state_index + 2] = (channel_gain[agent, k] * actions[agent]) / (
+            next_state[state_index + 2] = (channel_gain[agent, k] * actions[agent]) / (
                     np.sum(channel_gain[:, k] * actions) - channel_gain[k, k] * actions[k] + self.noise)
 
             state_index += 3
