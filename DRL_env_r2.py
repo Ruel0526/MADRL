@@ -18,20 +18,22 @@ class DRLenv2(gym.Env):
         self.transmitters = 3
         self.users = 3
         self.TTI = 0
-        self.max_TTI = 50000 # Define your max TTI
+        self.max_TTI = 10000 # Define your max TTI
         self.pmax = math.pow(10, 0.8)
-        self.action_cand = 3
+        self.action_cand = 5
         self.action_set = np.linspace(0, self.pmax, self.action_cand)
         self.noise = math.pow(10, -14.4)
         #self.state_size = 2 * (1 + self.transmitters) + self.transmitters * self.users * 2
-        self.state_size = (2+ self.users*self.transmitters)*2
+        #self.state_size = (2+ self.users*self.transmitters)*2
+        #self.state_size = (5 + self.users * self.transmitters + self.users * self.transmitters) * 2
+        self.state_size = (5 + self.users * self.transmitters)*2
 
-        self.f_d = 2
+        self.f_d = 10
         self.T = 0.02
         self.rho = sp.jv(0, 2 * math.pi * self.f_d * self.T)
 
-        self.A = self.tx_positions_gen(self.transmitters, 500)
-        self.B, self.inside_status = self.rx_positions_gen(self.A, 200, 500)
+        self.A = self.tx_positions_gen(self.transmitters, 100)
+        self.B, self.inside_status = self.rx_positions_gen(self.A, 99, 100)
 
         # Define action and observation space
         self.action_space = spaces.Discrete(int(self.action_cand ** self.transmitters))
@@ -47,10 +49,25 @@ class DRLenv2(gym.Env):
         self.state = np.zeros(self.state_size)
         self.TTI = 0
         self.A = self.tx_positions_gen(self.transmitters, 100)
-        self.B, self.inside_status = self.rx_positions_gen(self.A, 10, 100)
+        #self.B, self.inside_status = self.rx_positions_gen(self.A, 99, 100)
+
+        R = 100
+        rx_positions = []
+        '''
+        rx_positions.append((-R + 3 * math.cos(5 * math.pi / 6), -R / math.sqrt(3) + 3 * math.sin(5 * math.pi / 6)))
+        rx_positions.append((-R+3*math.cos(math.pi/6), -R / math.sqrt(3)+3*math.sin(math.pi/6)))
+        rx_positions.append((-R+3*math.cos(3*math.pi/2), -R / math.sqrt(3)+3*math.sin(3*math.pi/2)))
+        '''
+        rx_positions.append((-2 * R+ (200/math.sqrt(3)-5) * math.cos(5 * math.pi / 6), 0+ (200/math.sqrt(3)-5) * math.sin(5 * math.pi / 6)))
+        rx_positions.append((0+ (200/math.sqrt(3)-5) * math.cos(1 * math.pi / 6), 0+ (200/math.sqrt(3)-5) * math.sin(1 * math.pi / 6)))
+        rx_positions.append((-R+ (200/math.sqrt(3)-5) * math.cos(3 * math.pi / 2), -R * math.sqrt(3) + (200/math.sqrt(3)-5) * math.sin(3 * math.pi / 2)))
+
+        self.B = rx_positions
+
         self.H = np.ones((self.transmitters, self.transmitters)) * (
                 random.gauss(0, np.sqrt(1 / 2)) + random.gauss(0, np.sqrt(1 / 2)) * 1j)
         self.channel_gain = np.zeros((self.transmitters, self.users))
+        self.signal_powers = np.zeros((self.transmitters, self.users))
         for x in range(self.transmitters):
             for y in range(self.users):
                 self.channel_gain[x, y] = self.channel_gain_function(self.A[x], self.B[y], self.H[x, y])
@@ -202,6 +219,7 @@ class DRLenv2(gym.Env):
 
         old_state = np.copy(self.state)
         old_channel_gain = np.copy(self.channel_gain)
+        old_signal_powers = np.copy(self.signal_powers)
 
         #actions = np.ones(self.transmitters) * self.action_set[action]
         actions = self.decode_action(action)
@@ -217,21 +235,36 @@ class DRLenv2(gym.Env):
         for x in range(self.transmitters):
             for y in range(self.users):
                 self.channel_gain[x, y] = self.channel_gain_function(self.A[x], self.B[y], self.H[x, y])
+                self.signal_powers[x, y] = self.channel_gain[x, y] * actions[x]
 
         scaler = MinMaxScaler()
         gain_to_state = np.copy(self.channel_gain)
         channel_gain_reshaped = gain_to_state.reshape(-1, 1)
         scaled_channel_gain = scaler.fit_transform(channel_gain_reshaped)
         scaled_channel_gain = scaled_channel_gain.reshape(self.channel_gain.shape).flatten()
+        signals_to_state = np.copy(self.signal_powers)
+        signals_reshaped = signals_to_state.reshape(-1, 1)
+        scaled_signals = scaler.fit_transform(signals_reshaped)
+        scaled_signals = scaled_signals.reshape(self.signal_powers.shape).flatten()
 
         old_channel_gain_reshaped = old_channel_gain.reshape(-1, 1)
         old_scaled_channel_gain = scaler.fit_transform(old_channel_gain_reshaped)
         old_scaled_channel_gain = old_scaled_channel_gain.reshape(self.channel_gain.shape).flatten()
 
+        old_signal_powers_reshaped = old_signal_powers.reshape(-1, 1)
+        old_scaled_signal_powers = scaler.fit_transform(old_signal_powers_reshaped)
+        old_scaled_signal_powers = old_scaled_signal_powers.reshape(self.signal_powers.shape).flatten()
+
+        '''
+        h_mean = np.mean(self.channel_gain)
+        h_std = np.std(self.channel_gain)
+        scaled_channel_gain = (self.channel_gain-h_mean)/h_std
+        old_h_mean = np.mean(old_channel_gain)
+        old_h_std = np.std(old_channel_gain)
+        old_scaled_channel_gain = (old_channel_gain - old_h_mean) / old_h_std
+        '''
+        '''
         m, n = self.channel_gain.shape
-        #required_size = 4 + (m * n) * 2
-        #if self.state_size < required_size:
-        #    raise ValueError(f"self.state size ({self.state_size}) is smaller than required ({required_size})")
         self.state[0] = action
         self.state[1] = reward
         state_index = 2
@@ -240,36 +273,42 @@ class DRLenv2(gym.Env):
         self.state[state_index + m * n + 1] = old_state[1]
         self.state[state_index + m * n + 2:] = old_scaled_channel_gain
         '''
-        state_index = 0
-        for i in range(self.transmitters):
-            self.state[state_index] = actions[i]
-            state_index += 1
-        self.state[state_index] = sum_SINR
-        self.state[state_index + 1] = reward
-        '''
         '''
         m, n = self.channel_gain.shape
-        required_size = 4 + (m * n) * 2
-        if self.state_size < required_size:
-            raise ValueError(f"self.state size ({self.state_size}) is smaller than required ({required_size})")
-
-        self.state[0] = reward
-        state_index = 1
-        for i in range(self.transmitters):
-            self.state[state_index] = actions[i]
-            state_index += 1
-        for i in range(self.transmitters + 1):
-            self.state[state_index] = old_state[state_index - self.transmitters - 1]
-            state_index += 1
-
-        self.state[state_index:state_index + m * n] = self.channel_gain.flatten()
-        self.state[state_index + m * n:] = old_channel_gain.flatten()
-
-        self.TTI += 1
-
-        del old_channel_gain
-        del old_state
+        self.state[0] = action
+        self.state[1] = actions[0]
+        self.state[2] = actions[1]
+        self.state[3] = actions[2]
+        self.state[4] = reward
+        state_index = 5
+        self.state[state_index:state_index + m * n] = scaled_channel_gain
+        self.state[state_index + m * n:state_index + m * n + m * n] = scaled_signals
+        self.state[state_index + m * n + m * n] = old_state[0]
+        self.state[state_index + m * n + m * n + 1] = old_state[1]
+        self.state[state_index + m * n + m * n + 2] = old_state[2]
+        self.state[state_index + m * n + m * n + 3] = old_state[3]
+        self.state[state_index + m * n + m * n + 4] = old_state[4]
+        self.state[state_index + m * n + m * n + 5: state_index + m * n + m * n + 5 + m * n] = old_scaled_channel_gain
+        self.state[state_index + m * n + m * n + 5 + m * n: state_index + m * n + m * n + 5 + m * n + m * n] = old_scaled_signal_powers
         '''
+        m, n = self.channel_gain.shape
+        self.state[0] = action
+        self.state[1] = actions[0]
+        self.state[2] = actions[1]
+        self.state[3] = actions[2]
+        self.state[4] = reward
+        state_index = 5
+        self.state[state_index:state_index + m * n] = scaled_channel_gain
+
+        self.state[state_index + m * n] = old_state[0]
+        self.state[state_index + m * n+1] = old_state[1]
+        self.state[state_index + m * n+2] = old_state[2]
+        self.state[state_index + m * n+3] = old_state[3]
+        self.state[state_index + m * n+4] = old_state[4]
+
+        self.state[state_index + m * n+5:] = old_scaled_channel_gain
+
+
 
         return self.state, reward, done, info
 
