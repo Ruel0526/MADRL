@@ -53,7 +53,7 @@ class DRLenv2(gym.Env):
 
         R = 100
         rx_positions = []
-        '''
+
         rx_positions.append((-R + 3 * math.cos(5 * math.pi / 6), -R / math.sqrt(3) + 3 * math.sin(5 * math.pi / 6)))
         rx_positions.append((-R+3*math.cos(math.pi/6), -R / math.sqrt(3)+3*math.sin(math.pi/6)))
         rx_positions.append((-R+3*math.cos(3*math.pi/2), -R / math.sqrt(3)+3*math.sin(3*math.pi/2)))
@@ -61,7 +61,7 @@ class DRLenv2(gym.Env):
         rx_positions.append((-2 * R+ (200/math.sqrt(3)-5) * math.cos(5 * math.pi / 6), 0+ (200/math.sqrt(3)-5) * math.sin(5 * math.pi / 6)))
         rx_positions.append((0+ (200/math.sqrt(3)-5) * math.cos(1 * math.pi / 6), 0+ (200/math.sqrt(3)-5) * math.sin(1 * math.pi / 6)))
         rx_positions.append((-R+ (200/math.sqrt(3)-5) * math.cos(3 * math.pi / 2), -R * math.sqrt(3) + (200/math.sqrt(3)-5) * math.sin(3 * math.pi / 2)))
-
+'''
         self.B = rx_positions
 
         self.H = np.ones((self.transmitters, self.transmitters)) * (
