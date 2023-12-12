@@ -1167,7 +1167,12 @@ def full_pwr():
 
 def moving_average(rewards, window_size):
     cumsum = np.cumsum(np.insert(rewards, 0, 0))
-    return (cumsum[window_size:] - cumsum[:-window_size]) / float(window_size)
+
+    ma_values = (cumsum[window_size:] - cumsum[:-window_size]) / float(window_size)
+    cumulative_sum = np.cumsum(rewards)
+    cumulative_average = cumulative_sum[:window_size] / np.arange(1, min(window_size + 1, len(rewards) + 1))
+    return np.concatenate((cumulative_average, ma_values))
+    #return (cumsum[window_size:] - cumsum[:-window_size]) / float(window_size)
 
 
 def graph(switch):
@@ -1277,9 +1282,9 @@ def graph(switch):
         plt.ylabel('Average of cumulative reward per link')
 
     if switch == 1:
-        plt.plot(range(space - 1, space - 1 + len(cumulative_rewards_optimal_no_delay)),
+        plt.plot(range(0, len(cumulative_rewards_optimal_no_delay)),
                  cumulative_rewards_optimal_no_delay, label='Brute (no delay)', color='blue')
-        plt.plot(range(space - 1, space - 1 + len(cumulative_rewards)), cumulative_rewards,
+        plt.plot(range(0, len(cumulative_rewards)), cumulative_rewards,
                  label='Centralized DRL', color='purple')
         #plt.plot(range(space - 1, space - 1 + len(cumulative_rewards_multi)), cumulative_rewards_multi, label='Multi-agent DRL')
         #plt.plot(range(space - 1, space - 1 + len(cumulative_rate_multi)), cumulative_rate_multi,
@@ -1287,9 +1292,9 @@ def graph(switch):
         #plt.plot(range(space - 1, space - 1 + len(cumulative_rewards_optimal)), cumulative_rewards_optimal,
         #         label='Brute (delay)')
 
-        plt.plot(range(space - 1, space - 1 + len(cumulative_rewards_full_pwr)), cumulative_rewards_full_pwr,
+        plt.plot(range(0, len(cumulative_rewards_full_pwr)), cumulative_rewards_full_pwr,
                  label='Full power', color='cyan')
-        plt.plot(range(space - 1, space - 1 + len(cumulative_rewards_random_pwr)), cumulative_rewards_random_pwr,
+        plt.plot(range(0, len(cumulative_rewards_random_pwr)), cumulative_rewards_random_pwr,
                  label='Random power', color='red')
         #plt.plot(range(space - 1, space - 1 + len(cumulative_rewards_FP)), cumulative_rewards_FP,
         #         label='FP (no delay)')
@@ -1300,8 +1305,9 @@ def graph(switch):
         plt.legend(fontsize=legend_font_size)
         plt.xlabel('Time slot')
         plt.ylabel('Moving average of SE per link')
-    plt.subplots_adjust(hspace=0.5, wspace=0.5)
+    #plt.subplots_adjust(hspace=0.5, wspace=0.5)
     #plt.yscale('log', base=10)
+    plt.grid()
     plt.show()
 
 
