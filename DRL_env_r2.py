@@ -19,10 +19,10 @@ class DRLenv2(gym.Env):
         self.users = 3
         self.TTI = 0
         self.max_TTI = 10000 # Define your max TTI
-        self.pmax = math.pow(10, 0.8)
+        self.pmax = math.pow(10, 3)
         self.action_cand = 5
-        self.action_set = np.linspace(0, self.pmax, self.action_cand)
-        self.noise = math.pow(10, -14.4)
+        self.action_set = np.logspace(0, self.pmax, self.action_cand)
+        self.noise = math.pow(10, -10.4)
         #self.state_size = 2 * (1 + self.transmitters) + self.transmitters * self.users * 2
         #self.state_size = (2+ self.users*self.transmitters)*2
         #self.state_size = (5 + self.users * self.transmitters + self.users * self.transmitters) * 2
@@ -171,10 +171,10 @@ class DRLenv2(gym.Env):
         x2, y2 = rx_position
 
         d_k = np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
-        PL_0 = 120.9
+        PL_0 = 140.7
 
         log_normal = 8
-        pathloss = PL_0 + 37.6 * math.log10(d_k / 1000) + np.random.normal(0, log_normal)
+        pathloss = PL_0 + 36.7 * math.log10(d_k / 1000) + np.random.normal(0, log_normal)
 
         gain = small_scale.conjugate() * small_scale / (10 ** (pathloss / 10))
 

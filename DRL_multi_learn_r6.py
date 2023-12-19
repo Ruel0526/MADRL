@@ -207,7 +207,7 @@ class DRLmultienv(MultiAgentEnv):
             # if SINR == SINR_cap:
             # print('It is over 30dB')
 
-            sum_rate += math.log(1 + SINR)
+            sum_rate += math.log2(1 + SINR)
             sum_SINR += SINR
         return sum_rate, sum_SINR
 

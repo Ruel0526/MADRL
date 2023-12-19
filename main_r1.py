@@ -1410,14 +1410,13 @@ def testing():
 
 if __name__ == "__main__":  ##인터프리터에서 실행할 때만 위 함수(main())을 실행해라. 즉, 다른데서 이 파일을 참조할 땐(import 시) def만 가져가고, 실행은 하지말라는 의미.
     # bitcheck()
-    main2()
+    #main2()
     #main_multi()
     #main_multi2()
     # main_multi_MIMO()
     # opt()
     #fractional()
     #full_pwr()
-
 
 
     graph(1)
