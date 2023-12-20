@@ -142,7 +142,7 @@ class CustomQNetwork(q_network.QNetwork):
             activation=None))
 
     def call(self, inputs, step_type=None, network_state=(), training=False):
-        print(f"Input shape: {inputs.shape}, Input content: {inputs}")
+        #print(f"Input shape: {inputs.shape}, Input content: {inputs}")
         del step_type  # unused
         x = tf.cast(inputs, tf.float32)
         for layer in self._layers:
@@ -152,7 +152,7 @@ class CustomQNetwork(q_network.QNetwork):
 def main2():
     env_instance = DRLenv2()
     num_TTIs = env_instance.max_TTI
-    num_simul_rounds = 1
+    num_simul_rounds = 10
     num_iterations = num_TTIs
     rewards = np.zeros((num_simul_rounds,num_iterations))
 
@@ -190,7 +190,7 @@ def main2():
 
         # 2. Agent Setup
         # Custom network architecture
-        fc_layer_params = (1024,1024,1024)  # Adjusted layer sizes
+        fc_layer_params = (200, 100, 50)  # Adjusted layer sizes
         dropout_rate = 0  # Dropout rate (between 0 and 1)
         l2_reg = 0  # L2 regularization factor
 
@@ -228,7 +228,7 @@ def main2():
         train_step_counter = tf.Variable(0)
 
         #discount_factor = 0.8
-        discount_factor = 0.3
+        discount_factor = 0.2
 
         total_iterations_between_updates = 100
         target_update_tau = 1
@@ -251,13 +251,13 @@ def main2():
         replay_buffer = tf_uniform_replay_buffer.TFUniformReplayBuffer(
             data_spec=agent.collect_data_spec,
             batch_size=train_env.batch_size,
-            max_length=30000)
+            max_length=3000)
 
         # 4. Data Collection
-        initial_epsilon = 0.2
+        initial_epsilon = 1
 
         # Epsilon decay rate
-        epsilon_decay = 1e-4
+        epsilon_decay = 1e-3
 
         # Minimum epsilon value
         min_epsilon = 0.0001
@@ -287,7 +287,7 @@ def main2():
 
         collect_steps_per_iteration = 1
 
-        batch_size = 256
+        batch_size = 128
         dataset = replay_buffer.as_dataset(
             num_parallel_calls=3,
             sample_batch_size=batch_size,
@@ -297,10 +297,10 @@ def main2():
 
         model = agent._q_network
         model.summary()
-
+        print(env_instance.action_set)
         for iteration in range(num_iterations):
             # Collect a few steps and save to the replay buffer
-            #print("iter =", iteration, train_env_raw.channel_gain)
+            #print("iter =", iteration)
             best, optimal_no_delay[episode, iteration] = find_optimal_actions(train_env_raw.channel_gain, env_instance.action_set,  env_instance.noise,  env_instance.transmitters)
             full_pwr[episode, iteration] = compute_sum_rate(train_env_raw.channel_gain, action_full_pwr,
                                                             env_instance.noise)
@@ -389,19 +389,19 @@ def main2():
         
             '''
         channel_mat = train_env_raw.channel_gain
-        train_env.reset()
+        #train_env.reset()
 
 
     #np.save('./save_weights/centralized_DRL.npy', rewards)
-    np.save('./save_weights/centralized_DRL_test7_variant_min_inter.npy', rewards)
+    np.save('./save_weights/centralized_DRL_test10_invariant_channel_model4_v2.npy', rewards)
     #np.save('./save_weights/full_power.npy', full_pwr)
     #np.save('./save_weights/random_power.npy', random_pwr)
     #np.save('./save_weights/optimal_no_delay.npy', optimal_no_delay)
 
-    np.save('./save_weights/full_power_test7_variant_min_inter.npy', full_pwr)
-    np.save('./save_weights/random_power_test7_variant_min_inter.npy', random_pwr)
-    np.save('./save_weights/optimal_no_delay_test7_variant_min_inter.npy', optimal_no_delay)
-    np.save('./save_weights/centralized_DRL_test7_variant_min_inter_channel_mat.npy', channel_mat)
+    np.save('./save_weights/full_power_test10_invariant_channel_model4_v2.npy', full_pwr)
+    np.save('./save_weights/random_power_test10_invariant_channel_model4_v2.npy', random_pwr)
+    np.save('./save_weights/optimal_no_delay_test10_invariant_channel_model4_v2.npy', optimal_no_delay)
+    np.save('./save_weights/centralized_DRL_test10_invariant_channel_mat_channel_model4_v2.npy', channel_mat)
 
 
 
@@ -762,11 +762,11 @@ def compute_sum_rate(channel_gain, actions, noise):
         SINR = channel_gain[i, i] * actions[i] / (interferences + noise)
 
         # Cap the SINR at 30 dB
-        SINR = min(SINR, SINR_cap)
+        #SINR = min(SINR, SINR_cap)
         #if SINR == SINR_cap:
             #print('It is over 30dB')
 
-        sum_rate += math.log(1 + SINR)
+        sum_rate += math.log2(1 + SINR)
     return sum_rate
 
 
@@ -785,23 +785,6 @@ def find_optimal_actions(channel_gain, action_set, noise, num_agents):
     return best_actions, optimal_sum_rate
 
 
-def find_optimal_actions_same(channel_gain, action_set, noise, num_agents):
-    optimal_sum_rate = float('-inf')
-    best_action = 0
-
-    # Iterate over each action in the action set
-    for action in action_set:
-        # Apply the same action to all agents
-        actions = [action] * num_agents
-        current_sum_rate = compute_sum_rate(channel_gain, actions, noise)
-        if current_sum_rate > optimal_sum_rate:
-            optimal_sum_rate = current_sum_rate
-            best_action = action
-
-    # The best actions are the same for all agents
-    best_actions = [best_action] * num_agents
-
-    return best_actions, optimal_sum_rate
 
 
 def sum_rate_objective(power, channel_gain_matrix, noise_power):
@@ -1167,36 +1150,39 @@ def full_pwr():
 
 def moving_average(rewards, window_size):
     cumsum = np.cumsum(np.insert(rewards, 0, 0))
-
-    ma_values = (cumsum[window_size:] - cumsum[:-window_size]) / float(window_size)
-    cumulative_sum = np.cumsum(rewards)
-    cumulative_average = cumulative_sum[:window_size] / np.arange(1, min(window_size + 1, len(rewards) + 1))
-    return np.concatenate((cumulative_average, ma_values))
-    #return (cumsum[window_size:] - cumsum[:-window_size]) / float(window_size)
+    return (cumsum[window_size:] - cumsum[:-window_size]) / float(window_size)
 
 
 def graph(switch):
     env = DRLenv2()
     plot_hexagonal_grid(env.A, env.B, env.inside_status, 100, 99)
-    centralized_DRL = np.load('./save_weights/centralized_DRL_test7_variant_min_inter.npy')
+    centralized_DRL = np.load('./save_weights/centralized_DRL_test13_variant_channel_model2.npy')
     multi_agent_DRL = np.load('./save_weights/multi_agent_DRL.npy')
     multi_agent_DRL_MIMO = np.load('./save_weights/multi_agent_DRL_MIMO.npy')
     FP = np.load('./save_weights/FP.npy')
     delayed_FP = np.load('./save_weights/central.npy')
     optimal = np.load('./save_weights/optimal.npy')
-    optimal_no_delay = np.load('./save_weights/optimal_no_delay_test7_variant_min_inter.npy')
-    full_pwr = np.load('./save_weights/full_power_test7_variant_min_inter.npy')
-    random_pwr = np.load('./save_weights/random_power_test7_variant_min_inter.npy')
+    optimal_no_delay = np.load('./save_weights/optimal_no_delay_test10_invariant_channel_model4_v2.npy')
+    full_pwr = np.load('./save_weights/full_power_test10_invariant_channel_model4_v2.npy')
+    random_pwr = np.load('./save_weights/random_power_test10_invariant_channel_model4_v2.npy')
     rate_DRL = np.load('./save_weights/multi_agent_DRL_rate.npy')
 
-    channel_mat = np.load('./save_weights/centralized_DRL_test7_variant_min_inter_channel_mat.npy')
+    channel_mat = np.load('./save_weights/centralized_DRL_test10_invariant_channel_mat_channel_model4_v2.npy')
     print("Channel gain of time invariant", channel_mat)
 
     num_tx = 3
-    num_simul_rounds = 1
+    num_simul_rounds = 10
     start = 20
-    space = 1000
-    print(len(centralized_DRL))
+    space = 250
+
+    print(centralized_DRL)
+    print(optimal_no_delay)
+
+
+
+
+
+
 
     reward_avg = centralized_DRL.sum(axis=0) / (num_simul_rounds * num_tx)
     reward_avg_multi = multi_agent_DRL.sum(axis=0) / (num_simul_rounds * num_tx)
@@ -1208,7 +1194,6 @@ def graph(switch):
     reward_avg_optimal_no_delay = optimal_no_delay.sum(axis=0) / (num_simul_rounds * num_tx)
     reward_avg_full_pwr = full_pwr.sum(axis=0) / (num_simul_rounds * num_tx)
     reward_avg_random_pwr = random_pwr.sum(axis=0) / (num_simul_rounds * num_tx)
-    print(len(reward_avg))
 
 
     if switch == 0:
@@ -1267,12 +1252,13 @@ def graph(switch):
     if switch == 0:
         plt.plot(range(start, len(reward_avg_optimal_no_delay)), cumulative_rewards_optimal_no_delay,
                  label='Brute (no delay)', color='blue')
+        plt.plot(range(start, len(reward_avg_full_pwr)), cumulative_rewards_full_pwr, label='Full power', color='cyan')
         plt.plot(range(start, len(reward_avg)), cumulative_rewards, label='Centralized DRL', color='purple')
         #plt.plot(range(start, len(reward_avg_multi)), cumulative_rewards_multi, label='Multi-agent DRL')
         #plt.plot(range(start, len(reward_avg_multi)), cumulative_rate_multi, label='Multi-agent DRL')
 
         #plt.plot(range(start, len(reward_avg_optimal)), cumulative_rewards_optimal, label='Brute (delay)')
-        plt.plot(range(start, len(reward_avg_full_pwr)), cumulative_rewards_full_pwr, label='Full power', color='cyan')
+
         plt.plot(range(start, len(reward_avg_random_pwr)), cumulative_rewards_random_pwr, label='Random power', color='red')
         #plt.plot(range(start, len(reward_avg_FP)), cumulative_rewards_FP, label='FP (no delay)')
         #plt.plot(range(start, len(reward_avg_delayed_FP)), cumulative_rewards_delayed_FP, label='Central (Delayed FP)')
@@ -1282,32 +1268,58 @@ def graph(switch):
         plt.ylabel('Average of cumulative reward per link')
 
     if switch == 1:
-        plt.plot(range(0, len(cumulative_rewards_optimal_no_delay)),
+        plt.plot(range(space - 1, space - 1 + len(cumulative_rewards_optimal_no_delay)),
                  cumulative_rewards_optimal_no_delay, label='Brute (no delay)', color='blue')
-        plt.plot(range(0, len(cumulative_rewards)), cumulative_rewards,
+
+        plt.plot(range(space - 1, space - 1 + len(cumulative_rewards_full_pwr)), cumulative_rewards_full_pwr,
+                 label='Full power', color='cyan')
+
+
+
+
+        plt.plot(range(space - 1, space - 1 + len(cumulative_rewards)), cumulative_rewards,
                  label='Centralized DRL', color='purple')
+
+
+
         #plt.plot(range(space - 1, space - 1 + len(cumulative_rewards_multi)), cumulative_rewards_multi, label='Multi-agent DRL')
         #plt.plot(range(space - 1, space - 1 + len(cumulative_rate_multi)), cumulative_rate_multi,
         #         label='Multi-agent DRL')
         #plt.plot(range(space - 1, space - 1 + len(cumulative_rewards_optimal)), cumulative_rewards_optimal,
         #         label='Brute (delay)')
 
-        plt.plot(range(0, len(cumulative_rewards_full_pwr)), cumulative_rewards_full_pwr,
-                 label='Full power', color='cyan')
-        plt.plot(range(0, len(cumulative_rewards_random_pwr)), cumulative_rewards_random_pwr,
+
+
+
+        plt.plot(range(space - 1, space - 1 + len(cumulative_rewards_random_pwr)), cumulative_rewards_random_pwr,
                  label='Random power', color='red')
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         #plt.plot(range(space - 1, space - 1 + len(cumulative_rewards_FP)), cumulative_rewards_FP,
         #         label='FP (no delay)')
         #plt.plot(range(space - 1, space - 1 + len(cumulative_rewards_delayed_FP)), cumulative_rewards_delayed_FP,
         #         label='Central (Delayed FP)')
 
-        legend_font_size = 15  # You can adjust this value
+        legend_font_size = 25  # You can adjust this value
         plt.legend(fontsize=legend_font_size)
         plt.xlabel('Time slot')
         plt.ylabel('Moving average of SE per link')
-    #plt.subplots_adjust(hspace=0.5, wspace=0.5)
+    plt.subplots_adjust(hspace=0.5, wspace=0.5)
+    plt.grid(True)
     #plt.yscale('log', base=10)
-    plt.grid()
     plt.show()
 
 
@@ -1405,6 +1417,48 @@ def testing():
         if all(dones.values()):
             break
 
+def compute_sum_rate2(channel_gain, actions, noise):
+    sum_rate = 0
+    SINR_cap = 10 ** (30 / 10)
+    SINRs = np.zeros((3))
+    SINRs_db = np.zeros((3))
+    SNRs_db = np.zeros((3))
+    rate = np.zeros((3))
+    for i in range(len(actions)):
+        interferences = sum(channel_gain[j, i] * actions[j] for j in range(len(actions)) if j != i)
+        SINR = channel_gain[i, i] * actions[i] / (interferences + noise)
+        SNR = channel_gain[i, i] * actions[i] / noise
+
+        # Cap the SINR at 30 dB
+        #SINR = min(SINR, SINR_cap)
+        #if SINR == SINR_cap:
+            #print('It is over 30dB')
+        SINRs[i] = SINR
+        SINRs_db[i] = 10*math.log10(SINR)
+        SNRs_db[i] = 10 * math.log10(SNR)
+        rate[i] = math.log2(1 + SINR)
+
+        sum_rate += math.log2(1 + SINR)
+    return sum_rate, SNRs_db, SINRs_db, rate
+
+def testing2():
+    env = DRLenv2()
+    H= np.load('./save_weights/centralized_DRL_test11_invariant_channel_mat_channel_model5_v2.npy')
+    H = H*1
+    print(H)
+    sum_rate, SNRs, SINRs_db, rate =compute_sum_rate2(H,[1000, 1000, env.action_set[9]], env.noise)
+    best, optimal_no_delay= find_optimal_actions(H, env.action_set,  env.noise,  env.transmitters)
+    print(SNRs)
+    print(SINRs_db)
+    print(rate)
+
+    print(sum_rate)
+
+    print(env.action_set)
+
+    print(best)
+
+
 
 
 
@@ -1421,3 +1475,4 @@ if __name__ == "__main__":  ##인터프리터에서 실행할 때만 위 함수(
 
     graph(1)
     #testing()
+    #testing2()
